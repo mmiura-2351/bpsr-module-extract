@@ -14,12 +14,14 @@ class MainWindow(ttk.Frame):
         master: tk.Misc,
         *,
         on_start: Callable[[], None],
+        on_manual_run: Callable[[], None],
         on_export: Callable[[], None],
         on_apply_region: Callable[[int, bool, str, str, str, str], None],
         on_drag_select_region: Callable[[int], None],
     ) -> None:
         super().__init__(master)
         self._on_start = on_start
+        self._on_manual_run = on_manual_run
         self._on_export = on_export
         self._on_apply_region = on_apply_region
         self._on_drag_select_region = on_drag_select_region
@@ -43,11 +45,20 @@ class MainWindow(ttk.Frame):
         title = ttk.Label(self, text="Module OCR Tool", font=("", 16, "bold"))
         title.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
-        start_button = ttk.Button(self, text="処理開始", command=self._on_start)
-        start_button.grid(row=1, column=0, sticky="w")
+        action_frame = ttk.Frame(self)
+        action_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
+        action_frame.grid_columnconfigure(0, weight=1)
+        action_frame.grid_columnconfigure(1, weight=1)
+        action_frame.grid_columnconfigure(2, weight=1)
 
-        export_button = ttk.Button(self, text="JSON出力", command=self._on_export)
-        export_button.grid(row=1, column=1, sticky="e")
+        start_button = ttk.Button(action_frame, text="処理開始", command=self._on_start)
+        start_button.grid(row=0, column=0, sticky="w")
+
+        manual_button = ttk.Button(action_frame, text="OCR実行 (F8代替)", command=self._on_manual_run)
+        manual_button.grid(row=0, column=1, sticky="w")
+
+        export_button = ttk.Button(action_frame, text="JSON出力", command=self._on_export)
+        export_button.grid(row=0, column=2, sticky="e")
 
         ttk.Separator(self).grid(row=2, column=0, columnspan=2, sticky="ew", pady=12)
 
@@ -170,4 +181,3 @@ class MainWindow(ttk.Frame):
     def show_error(self, message: str) -> None:
         logger.error("Show error dialog: %s", message.replace("\n", " "))
         messagebox.showerror("Module OCR Tool", message)
-

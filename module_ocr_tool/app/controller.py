@@ -57,6 +57,7 @@ class AppController:
         self.main_window = MainWindow(
             root,
             on_start=self.start_capture_mode,
+            on_manual_run=self.run_manual_capture,
             on_export=self._handle_export_click,
             on_apply_region=self.apply_capture_region_from_ui,
             on_drag_select_region=self.open_region_selector,
@@ -265,12 +266,12 @@ class AppController:
 
     def _hotkey_note(self) -> str:
         if self._hotkey_backend == "register-hotkey":
-            return "F8/ESC: グローバル有効（Win32 RegisterHotKey）"
+            return "F8/ESC: グローバル有効（Win32 RegisterHotKey） / OCR実行ボタンでも可"
         if self._hotkey_backend == "keyboard":
-            return "F8/ESC: グローバル有効（keyboard）"
+            return "F8/ESC: グローバル有効（keyboard） / OCR実行ボタンでも可"
         if self._hotkey_backend == "win32-polling":
-            return "F8/ESC: グローバル有効（Win32 polling）"
-        return "F8/ESC は本ウィンドウ選択中のみ有効"
+            return "F8/ESC: グローバル有効（Win32 polling） / OCR実行ボタンでも可"
+        return "F8/ESC は本ウィンドウ選択中のみ有効 / OCR実行ボタン推奨"
 
     def _sync_region_inputs_to_ui(self) -> None:
         for index, region in enumerate(self._effect_regions):
@@ -403,6 +404,21 @@ class AppController:
         self._set_status("waiting_capture", reason="start capture mode")
         self.state.last_error_message = None
         self._update_view()
+
+    def run_manual_capture(self) -> None:
+        # Hotkey が使えない環境向けに、同一処理を手動ボタンで実行する。
+        if self.state.status == "idle":
+            self.start_capture_mode()
+        if self.state.status == "waiting_capture":
+            self.on_hotkey_f8(source="manual-button")
+            return
+        if self.state.status == "processing":
+            self.main_window.show_error("OCR処理中です。完了まで待ってください。")
+            return
+        if self.state.status == "editing_result":
+            self.main_window.show_error("OCR結果確認中です。確定またはキャンセルしてください。")
+            return
+        self.main_window.show_error("現在はOCR実行できない状態です。")
 
     def stop_capture_mode(self, _event: tk.Event | None = None, *, source: str = "ui") -> None:
         if self.state.status == "processing":
@@ -548,4 +564,3 @@ class AppController:
         self.main_window.show_error(message)
         self._set_status("waiting_capture", reason="error dialog closed")
         self._update_view()
-
