@@ -15,8 +15,8 @@ class MainWindow(ttk.Frame):
         *,
         on_start: Callable[[], None],
         on_export: Callable[[], None],
-        on_apply_region: Callable[[bool, str, str, str, str], None],
-        on_drag_select_region: Callable[[], None],
+        on_apply_region: Callable[[int, bool, str, str, str, str], None],
+        on_drag_select_region: Callable[[int], None],
     ) -> None:
         super().__init__(master)
         self._on_start = on_start
@@ -28,13 +28,14 @@ class MainWindow(ttk.Frame):
         self.module_count_var = tk.StringVar(value="0")
         self.hotkey_note_var = tk.StringVar(value="F8: スクリーンショット取得 / ESC: 終了")
         self.log_path_var = tk.StringVar(value="-")
-        self.region_summary_var = tk.StringVar(value="全画面")
+        self.region_summary_var = tk.StringVar(value="範囲1:未設定 / 範囲2:未設定 / 範囲3:未設定")
         self.last_ocr_var = tk.StringVar(value="-")
-        self.use_custom_region_var = tk.BooleanVar(value=False)
-        self.region_left_var = tk.StringVar(value="0")
-        self.region_top_var = tk.StringVar(value="0")
-        self.region_width_var = tk.StringVar(value="1280")
-        self.region_height_var = tk.StringVar(value="720")
+
+        self.region_enabled_vars: list[tk.BooleanVar] = []
+        self.region_left_vars: list[tk.StringVar] = []
+        self.region_top_vars: list[tk.StringVar] = []
+        self.region_width_vars: list[tk.StringVar] = []
+        self.region_height_vars: list[tk.StringVar] = []
 
         self._build()
 
@@ -60,49 +61,65 @@ class MainWindow(ttk.Frame):
         ttk.Label(self, textvariable=self.hotkey_note_var).grid(row=5, column=1, sticky="w")
 
         ttk.Label(self, text="ログファイル:").grid(row=6, column=0, sticky="w")
-        ttk.Label(self, textvariable=self.log_path_var, wraplength=420).grid(row=6, column=1, sticky="w")
+        ttk.Label(self, textvariable=self.log_path_var, wraplength=520).grid(row=6, column=1, sticky="w")
 
-        region_frame = ttk.LabelFrame(self, text="OCR取得範囲 (px)")
+        region_frame = ttk.LabelFrame(self, text="OCR取得範囲 (3枠)")
         region_frame.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        region_frame.grid_columnconfigure(1, weight=1)
-        region_frame.grid_columnconfigure(3, weight=1)
 
-        ttk.Checkbutton(region_frame, text="カスタム範囲を使用", variable=self.use_custom_region_var).grid(
-            row=0, column=0, columnspan=4, sticky="w", pady=(0, 4)
+        headers = ["範囲", "left", "top", "width", "height", "選択", "適用"]
+        for col, header in enumerate(headers):
+            ttk.Label(region_frame, text=header).grid(row=0, column=col, sticky="w", padx=(0, 6))
+
+        for index in range(3):
+            enabled_var = tk.BooleanVar(value=False)
+            left_var = tk.StringVar(value="0")
+            top_var = tk.StringVar(value="0")
+            width_var = tk.StringVar(value="240")
+            height_var = tk.StringVar(value="40")
+
+            self.region_enabled_vars.append(enabled_var)
+            self.region_left_vars.append(left_var)
+            self.region_top_vars.append(top_var)
+            self.region_width_vars.append(width_var)
+            self.region_height_vars.append(height_var)
+
+            row = index + 1
+            ttk.Checkbutton(region_frame, text=f"範囲{index + 1}", variable=enabled_var).grid(
+                row=row, column=0, sticky="w", padx=(0, 6), pady=2
+            )
+            ttk.Entry(region_frame, textvariable=left_var, width=8).grid(row=row, column=1, sticky="w", padx=(0, 6), pady=2)
+            ttk.Entry(region_frame, textvariable=top_var, width=8).grid(row=row, column=2, sticky="w", padx=(0, 6), pady=2)
+            ttk.Entry(region_frame, textvariable=width_var, width=8).grid(row=row, column=3, sticky="w", padx=(0, 6), pady=2)
+            ttk.Entry(region_frame, textvariable=height_var, width=8).grid(row=row, column=4, sticky="w", padx=(0, 6), pady=2)
+            ttk.Button(region_frame, text="ドラッグ", command=lambda i=index: self._emit_drag_select(i)).grid(
+                row=row, column=5, sticky="w", padx=(0, 6), pady=2
+            )
+            ttk.Button(region_frame, text="適用", command=lambda i=index: self._emit_apply_region(i)).grid(
+                row=row, column=6, sticky="w", pady=2
+            )
+
+        ttk.Label(region_frame, textvariable=self.region_summary_var, wraplength=560).grid(
+            row=4, column=0, columnspan=7, sticky="w", pady=(6, 0)
         )
-
-        ttk.Label(region_frame, text="left").grid(row=1, column=0, sticky="w")
-        ttk.Entry(region_frame, textvariable=self.region_left_var, width=10).grid(row=1, column=1, sticky="w", padx=(0, 8))
-        ttk.Label(region_frame, text="top").grid(row=1, column=2, sticky="w")
-        ttk.Entry(region_frame, textvariable=self.region_top_var, width=10).grid(row=1, column=3, sticky="w")
-
-        ttk.Label(region_frame, text="width").grid(row=2, column=0, sticky="w")
-        ttk.Entry(region_frame, textvariable=self.region_width_var, width=10).grid(row=2, column=1, sticky="w", padx=(0, 8))
-        ttk.Label(region_frame, text="height").grid(row=2, column=2, sticky="w")
-        ttk.Entry(region_frame, textvariable=self.region_height_var, width=10).grid(row=2, column=3, sticky="w")
-
-        ttk.Button(region_frame, text="範囲を適用", command=self._emit_apply_region).grid(
-            row=3, column=3, sticky="e", pady=(6, 2)
-        )
-        ttk.Button(region_frame, text="ドラッグ選択", command=self._on_drag_select_region).grid(
-            row=3, column=2, sticky="e", pady=(6, 2), padx=(0, 6)
-        )
-        ttk.Label(region_frame, textvariable=self.region_summary_var).grid(row=3, column=0, columnspan=3, sticky="w")
 
         ttk.Label(self, text="直近OCR生テキスト:").grid(row=8, column=0, sticky="nw", pady=(8, 0))
-        ttk.Label(self, textvariable=self.last_ocr_var, wraplength=420).grid(row=8, column=1, sticky="w", pady=(8, 0))
+        ttk.Label(self, textvariable=self.last_ocr_var, wraplength=520).grid(row=8, column=1, sticky="w", pady=(8, 0))
 
         for col in range(2):
             self.grid_columnconfigure(col, weight=1)
 
-    def _emit_apply_region(self) -> None:
+    def _emit_apply_region(self, index: int) -> None:
         self._on_apply_region(
-            self.use_custom_region_var.get(),
-            self.region_left_var.get(),
-            self.region_top_var.get(),
-            self.region_width_var.get(),
-            self.region_height_var.get(),
+            index,
+            self.region_enabled_vars[index].get(),
+            self.region_left_vars[index].get(),
+            self.region_top_vars[index].get(),
+            self.region_width_vars[index].get(),
+            self.region_height_vars[index].get(),
         )
+
+    def _emit_drag_select(self, index: int) -> None:
+        self._on_drag_select_region(index)
 
     def set_status(self, status: str) -> None:
         self.status_var.set(status)
@@ -119,12 +136,21 @@ class MainWindow(ttk.Frame):
     def set_region_summary(self, summary: str) -> None:
         self.region_summary_var.set(summary)
 
-    def set_region_inputs(self, *, use_custom: bool, left: int, top: int, width: int, height: int) -> None:
-        self.use_custom_region_var.set(use_custom)
-        self.region_left_var.set(str(left))
-        self.region_top_var.set(str(top))
-        self.region_width_var.set(str(width))
-        self.region_height_var.set(str(height))
+    def set_region_inputs(
+        self,
+        index: int,
+        *,
+        enabled: bool,
+        left: int,
+        top: int,
+        width: int,
+        height: int,
+    ) -> None:
+        self.region_enabled_vars[index].set(enabled)
+        self.region_left_vars[index].set(str(left))
+        self.region_top_vars[index].set(str(top))
+        self.region_width_vars[index].set(str(width))
+        self.region_height_vars[index].set(str(height))
 
     def set_last_ocr_text(self, text: str | None) -> None:
         display = text.strip() if text else "-"
@@ -144,3 +170,4 @@ class MainWindow(ttk.Frame):
     def show_error(self, message: str) -> None:
         logger.error("Show error dialog: %s", message.replace("\n", " "))
         messagebox.showerror("Module OCR Tool", message)
+

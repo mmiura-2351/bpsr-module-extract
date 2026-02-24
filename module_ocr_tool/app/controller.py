@@ -22,8 +22,15 @@ logger = logging.getLogger(__name__)
 
 class AppController:
     HOTKEY_POLL_INTERVAL_MS = 50
+
     VK_F8 = 0x77
     VK_ESCAPE = 0x1B
+
+    WM_HOTKEY = 0x0312
+    PM_REMOVE = 0x0001
+    MOD_NOREPEAT = 0x4000
+    HOTKEY_ID_F8 = 20001
+    HOTKEY_ID_ESC = 20002
 
     def __init__(self, root: tk.Tk, *, log_path: str | None = None) -> None:
         self.root = root
@@ -32,18 +39,20 @@ class AppController:
         self.capture = ScreenCapture()
         self.ocr_engine = TesseractOcrEngine()
 
+        self._effect_regions: list[CaptureRegion | None] = [None, None, None]
         self._processing_token = 0
 
+        self._user32 = self._load_user32()
+        self._hotkey_backend = "none"
         self._keyboard_module: Any | None = None
         self._keyboard_hotkey_ids: list[Any] = []
-        self._hotkey_backend = "none"
-
-        self._hotkey_polling_started = False
+        self._win_hotkeys_registered = False
+        self._hotkey_loop_started = False
         self._last_f8_down = False
         self._last_esc_down = False
-        self._user32 = self._load_user32()
 
         self._region_selector: RegionSelectorOverlay | None = None
+        self._region_selector_slot = -1
 
         self.main_window = MainWindow(
             root,
@@ -57,7 +66,6 @@ class AppController:
         self.root.bind("<F8>", self.on_hotkey_f8)
         self.root.bind("<Escape>", self.stop_capture_mode)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-
         logger.info("Controller initialized (platform=%s, log_path=%s)", os.name, self.log_path)
 
     def _on_close(self) -> None:
@@ -66,14 +74,19 @@ class AppController:
         self.root.destroy()
 
     def _cleanup_hotkeys(self) -> None:
-        if self._keyboard_module is None:
-            return
-        for hotkey_id in self._keyboard_hotkey_ids:
-            try:
-                self._keyboard_module.remove_hotkey(hotkey_id)
-            except Exception:
-                logger.exception("Failed to remove hotkey id=%s", hotkey_id)
-        self._keyboard_hotkey_ids.clear()
+        if self._win_hotkeys_registered and self._user32 is not None:
+            self._user32.UnregisterHotKey(None, self.HOTKEY_ID_F8)
+            self._user32.UnregisterHotKey(None, self.HOTKEY_ID_ESC)
+            self._win_hotkeys_registered = False
+            logger.info("Unregistered Win32 hotkeys")
+
+        if self._keyboard_module is not None:
+            for hotkey_id in self._keyboard_hotkey_ids:
+                try:
+                    self._keyboard_module.remove_hotkey(hotkey_id)
+                except Exception:
+                    logger.exception("Failed to remove keyboard hotkey id=%s", hotkey_id)
+            self._keyboard_hotkey_ids.clear()
 
     def _load_user32(self) -> Any | None:
         if os.name != "nt":
@@ -81,48 +94,30 @@ class AppController:
         try:
             import ctypes
         except Exception:
-            logger.exception("ctypes import failed; win32 polling disabled")
+            logger.exception("ctypes import failed; Win32 hotkeys disabled")
             return None
         windll = getattr(ctypes, "windll", None)
         if windll is None:
-            logger.warning("ctypes.windll unavailable; win32 polling disabled")
+            logger.warning("ctypes.windll unavailable; Win32 hotkeys disabled")
             return None
         return windll.user32
 
     def run(self) -> None:
         logger.info("Controller run")
         self._register_global_hotkeys()
+        self._sync_region_inputs_to_ui()
         self._update_view()
 
     def _register_global_hotkeys(self) -> None:
-        if self._keyboard_hotkey_ids:
+        if self._register_win_hotkeys():
+            self._hotkey_backend = "register-hotkey"
+            logger.info("Global hotkeys registered via Win32 RegisterHotKey")
             return
 
-        try:
-            import keyboard  # type: ignore[import-not-found]
-        except Exception:
-            logger.exception("keyboard import failed")
-        else:
-            try:
-                f8_id = keyboard.add_hotkey(
-                    "f8",
-                    lambda: self.root.after(0, lambda: self.on_hotkey_f8(source="global-keyboard")),
-                    suppress=False,
-                    trigger_on_release=False,
-                )
-                esc_id = keyboard.add_hotkey(
-                    "esc",
-                    lambda: self.root.after(0, lambda: self.stop_capture_mode(source="global-keyboard")),
-                    suppress=False,
-                    trigger_on_release=False,
-                )
-                self._keyboard_module = keyboard
-                self._keyboard_hotkey_ids = [f8_id, esc_id]
-                self._hotkey_backend = "keyboard"
-                logger.info("Global hotkeys registered via keyboard module")
-                return
-            except Exception:
-                logger.exception("keyboard global hotkey registration failed")
+        if self._register_keyboard_hotkeys():
+            self._hotkey_backend = "keyboard"
+            logger.info("Global hotkeys registered via keyboard module")
+            return
 
         if self._user32 is not None:
             self._hotkey_backend = "win32-polling"
@@ -133,26 +128,107 @@ class AppController:
         self._hotkey_backend = "window-only"
         logger.warning("Global hotkeys unavailable; only active when app window is focused")
 
-    def _start_hotkey_polling(self) -> None:
-        if self._hotkey_polling_started:
-            return
-        self._hotkey_polling_started = True
-        logger.info("Start win32 hotkey polling")
-        self.root.after(self.HOTKEY_POLL_INTERVAL_MS, self._poll_global_hotkeys)
+    def _register_win_hotkeys(self) -> bool:
+        if self._user32 is None:
+            return False
 
-    def _poll_global_hotkeys(self) -> None:
+        ok_f8 = bool(self._user32.RegisterHotKey(None, self.HOTKEY_ID_F8, self.MOD_NOREPEAT, self.VK_F8))
+        ok_esc = bool(self._user32.RegisterHotKey(None, self.HOTKEY_ID_ESC, self.MOD_NOREPEAT, self.VK_ESCAPE))
+        if ok_f8 and ok_esc:
+            self._win_hotkeys_registered = True
+            self._start_hotkey_polling()
+            return True
+
+        if ok_f8:
+            self._user32.UnregisterHotKey(None, self.HOTKEY_ID_F8)
+        if ok_esc:
+            self._user32.UnregisterHotKey(None, self.HOTKEY_ID_ESC)
+        self._win_hotkeys_registered = False
+        logger.warning("Win32 RegisterHotKey failed for F8/ESC")
+        return False
+
+    def _register_keyboard_hotkeys(self) -> bool:
         try:
-            if self._user32 is not None:
-                f8_down = self._is_vk_down(self.VK_F8)
-                esc_down = self._is_vk_down(self.VK_ESCAPE)
-                if f8_down and not self._last_f8_down:
-                    self.on_hotkey_f8(source="win32-polling")
-                if esc_down and not self._last_esc_down:
-                    self.stop_capture_mode(source="win32-polling")
-                self._last_f8_down = f8_down
-                self._last_esc_down = esc_down
+            import keyboard  # type: ignore[import-not-found]
+        except Exception:
+            logger.exception("keyboard import failed")
+            return False
+
+        try:
+            f8_id = keyboard.add_hotkey(
+                "f8",
+                lambda: self.root.after(0, lambda: self.on_hotkey_f8(source="global-keyboard")),
+                suppress=False,
+                trigger_on_release=False,
+            )
+            esc_id = keyboard.add_hotkey(
+                "esc",
+                lambda: self.root.after(0, lambda: self.stop_capture_mode(source="global-keyboard")),
+                suppress=False,
+                trigger_on_release=False,
+            )
+            self._keyboard_module = keyboard
+            self._keyboard_hotkey_ids = [f8_id, esc_id]
+            return True
+        except Exception:
+            logger.exception("keyboard hotkey registration failed")
+            return False
+
+    def _start_hotkey_polling(self) -> None:
+        if self._hotkey_loop_started:
+            return
+        self._hotkey_loop_started = True
+        self.root.after(self.HOTKEY_POLL_INTERVAL_MS, self._poll_hotkeys)
+
+    def _poll_hotkeys(self) -> None:
+        try:
+            if self._win_hotkeys_registered:
+                self._poll_win_hotkey_messages()
+            elif self._hotkey_backend == "win32-polling":
+                self._poll_win_key_state()
+        except Exception:
+            logger.exception("Hotkey polling error")
         finally:
-            self.root.after(self.HOTKEY_POLL_INTERVAL_MS, self._poll_global_hotkeys)
+            try:
+                if self.root.winfo_exists():
+                    self.root.after(self.HOTKEY_POLL_INTERVAL_MS, self._poll_hotkeys)
+            except tk.TclError:
+                return
+
+    def _poll_win_hotkey_messages(self) -> None:
+        if self._user32 is None:
+            return
+        import ctypes
+        from ctypes import wintypes
+
+        class MSG(ctypes.Structure):
+            _fields_ = [
+                ("hwnd", wintypes.HWND),
+                ("message", wintypes.UINT),
+                ("wParam", wintypes.WPARAM),
+                ("lParam", wintypes.LPARAM),
+                ("time", wintypes.DWORD),
+                ("pt", wintypes.POINT),
+            ]
+
+        msg = MSG()
+        while self._user32.PeekMessageW(ctypes.byref(msg), None, self.WM_HOTKEY, self.WM_HOTKEY, self.PM_REMOVE):
+            if int(msg.wParam) == self.HOTKEY_ID_F8:
+                self.on_hotkey_f8(source="register-hotkey")
+            elif int(msg.wParam) == self.HOTKEY_ID_ESC:
+                self.stop_capture_mode(source="register-hotkey")
+
+    def _poll_win_key_state(self) -> None:
+        if self._user32 is None:
+            return
+        f8_down = self._is_vk_down(self.VK_F8)
+        esc_down = self._is_vk_down(self.VK_ESCAPE)
+        if f8_down and not self._last_f8_down:
+            self.on_hotkey_f8(source="win32-polling")
+        if esc_down and not self._last_esc_down:
+            self.stop_capture_mode(source="win32-polling")
+        self._last_f8_down = f8_down
+        self._last_esc_down = esc_down
 
     def _is_vk_down(self, virtual_key: int) -> bool:
         if self._user32 is None:
@@ -177,21 +253,38 @@ class AppController:
             logger.info("Status: %s -> %s (%s)", previous, status, reason)
 
     def _format_region_summary(self) -> str:
-        if self.capture.region is None:
-            return "全画面"
-        return (
-            f"left={self.capture.region['left']}, "
-            f"top={self.capture.region['top']}, "
-            f"width={self.capture.region['width']}, "
-            f"height={self.capture.region['height']}"
-        )
+        segments: list[str] = []
+        for index, region in enumerate(self._effect_regions, start=1):
+            if region is None:
+                segments.append(f"範囲{index}:未設定")
+            else:
+                segments.append(
+                    f"範囲{index}:({region['left']},{region['top']},{region['width']},{region['height']})"
+                )
+        return " / ".join(segments)
 
     def _hotkey_note(self) -> str:
+        if self._hotkey_backend == "register-hotkey":
+            return "F8/ESC: グローバル有効（Win32 RegisterHotKey）"
         if self._hotkey_backend == "keyboard":
-            return "F8/ESC: グローバル有効（別ウィンドウでも動作）"
+            return "F8/ESC: グローバル有効（keyboard）"
         if self._hotkey_backend == "win32-polling":
             return "F8/ESC: グローバル有効（Win32 polling）"
         return "F8/ESC は本ウィンドウ選択中のみ有効"
+
+    def _sync_region_inputs_to_ui(self) -> None:
+        for index, region in enumerate(self._effect_regions):
+            if region is None:
+                self.main_window.set_region_inputs(index, enabled=False, left=0, top=0, width=240, height=40)
+            else:
+                self.main_window.set_region_inputs(
+                    index,
+                    enabled=True,
+                    left=region["left"],
+                    top=region["top"],
+                    width=region["width"],
+                    height=region["height"],
+                )
 
     def _update_view(self) -> None:
         self.main_window.set_status(self._status_label())
@@ -203,14 +296,19 @@ class AppController:
 
     def apply_capture_region_from_ui(
         self,
+        slot_index: int,
         use_custom_region: bool,
         left_text: str,
         top_text: str,
         width_text: str,
         height_text: str,
     ) -> None:
+        if slot_index < 0 or slot_index >= len(self._effect_regions):
+            return
+
         logger.info(
-            "Apply capture region requested (custom=%s, left=%s, top=%s, width=%s, height=%s)",
+            "Apply capture region requested (slot=%s, custom=%s, left=%s, top=%s, width=%s, height=%s)",
+            slot_index + 1,
             use_custom_region,
             left_text,
             top_text,
@@ -218,8 +316,8 @@ class AppController:
             height_text,
         )
         if not use_custom_region:
-            self.capture.region = None
-            logger.info("Capture region set to full screen")
+            self._effect_regions[slot_index] = None
+            self.main_window.set_region_inputs(slot_index, enabled=False, left=0, top=0, width=240, height=40)
             self._update_view()
             return
 
@@ -229,43 +327,59 @@ class AppController:
             width = int(width_text.strip())
             height = int(height_text.strip())
         except ValueError:
-            logger.warning("Invalid capture region input: non-integer value")
             self.main_window.show_error("OCR取得範囲は整数で入力してください。")
             return
 
         if width <= 0 or height <= 0:
-            logger.warning("Invalid capture region input: width/height must be positive")
             self.main_window.show_error("width と height は 1 以上を指定してください。")
             return
         if left < 0 or top < 0:
-            logger.warning("Invalid capture region input: left/top must be non-negative")
             self.main_window.show_error("left と top は 0 以上を指定してください。")
             return
 
-        self._apply_capture_region(left=left, top=top, width=width, height=height, source="manual-input")
+        self._apply_capture_region(slot_index, left=left, top=top, width=width, height=height, source="manual-input")
 
-    def _apply_capture_region(self, *, left: int, top: int, width: int, height: int, source: str) -> None:
+    def _apply_capture_region(
+        self,
+        slot_index: int,
+        *,
+        left: int,
+        top: int,
+        width: int,
+        height: int,
+        source: str,
+    ) -> None:
         region: CaptureRegion = {
             "left": left,
             "top": top,
             "width": width,
             "height": height,
         }
-        self.capture.region = region
-        self.main_window.set_region_inputs(use_custom=True, left=left, top=top, width=width, height=height)
-        logger.info("Capture region applied via %s: %s", source, region)
+        self._effect_regions[slot_index] = region
+        self.main_window.set_region_inputs(
+            slot_index,
+            enabled=True,
+            left=left,
+            top=top,
+            width=width,
+            height=height,
+        )
+        logger.info("Capture region applied via %s (slot=%s): %s", source, slot_index + 1, region)
         self._update_view()
 
-    def open_region_selector(self) -> None:
+    def open_region_selector(self, slot_index: int) -> None:
         if self.state.status == "processing":
             self.main_window.show_error("OCR処理中は範囲選択できません。")
+            return
+        if slot_index < 0 or slot_index >= len(self._effect_regions):
             return
 
         if self._region_selector is not None and self._region_selector.winfo_exists():
             logger.info("Region selector already open")
             return
 
-        logger.info("Open drag region selector")
+        self._region_selector_slot = slot_index
+        logger.info("Open drag region selector (slot=%s)", slot_index + 1)
         self._region_selector = RegionSelectorOverlay(
             self.root,
             on_selected=self._on_region_selected_by_drag,
@@ -273,11 +387,16 @@ class AppController:
         )
 
     def _on_region_selected_by_drag(self, left: int, top: int, width: int, height: int) -> None:
+        slot_index = self._region_selector_slot
         self._region_selector = None
-        self._apply_capture_region(left=left, top=top, width=width, height=height, source="drag-select")
+        self._region_selector_slot = -1
+        if slot_index < 0 or slot_index >= len(self._effect_regions):
+            return
+        self._apply_capture_region(slot_index, left=left, top=top, width=width, height=height, source="drag-select")
 
     def _on_region_select_canceled(self) -> None:
         self._region_selector = None
+        self._region_selector_slot = -1
         logger.info("Region selector canceled")
 
     def start_capture_mode(self) -> None:
@@ -288,11 +407,7 @@ class AppController:
     def stop_capture_mode(self, _event: tk.Event | None = None, *, source: str = "ui") -> None:
         if self.state.status == "processing":
             self._processing_token += 1
-            logger.info(
-                "Stop capture mode requested while processing; token incremented to %s (source=%s)",
-                self._processing_token,
-                source,
-            )
+            logger.info("Stop capture requested while processing (token=%s, source=%s)", self._processing_token, source)
         self._set_status("idle", reason=f"stop capture mode ({source})")
         self._update_view()
 
@@ -307,34 +422,51 @@ class AppController:
         self._processing_token += 1
         token = self._processing_token
         timeout_ms = max(int(self.ocr_engine.timeout_sec * 1000) + 3000, 8000)
-        logger.info(
-            "Processing started (token=%s, timeout_ms=%s, region=%s, source=%s)",
-            token,
-            timeout_ms,
-            self.capture.region,
-            source,
-        )
+        logger.info("Processing started (token=%s, timeout_ms=%s, source=%s)", token, timeout_ms, source)
         self.root.after(timeout_ms, lambda: self._handle_processing_timeout(token))
 
         worker = threading.Thread(target=self._process_capture_background, args=(token,), daemon=True)
         worker.start()
 
+    def _extract_single_effect_line(self, image) -> str:
+        text = self.ocr_engine.extract_text(image, config_override=self.ocr_engine.single_line_config)
+        for line in text.splitlines():
+            cleaned = line.strip()
+            if cleaned:
+                return cleaned
+        fallback = self.ocr_engine.extract_effect_texts(image, max_effects=1)
+        return fallback[0] if fallback else ""
+
     def _process_capture_background(self, token: int) -> None:
         started = time.monotonic()
         try:
             logger.info("Capture thread start (token=%s)", token)
-            image = self.capture.capture()
-            logger.info("Capture complete (token=%s, shape=%s)", token, getattr(image, "shape", None))
-            extracted_lines = self.ocr_engine.extract_effect_texts(image, max_effects=3)
-            raw_text = "\n".join(extracted_lines)
+
+            lines: list[str] = []
+            configured = [(index, region) for index, region in enumerate(self._effect_regions, start=1) if region is not None]
+
+            if configured:
+                logger.info("Using configured effect regions (count=%s)", len(configured))
+                for index, region in configured[:3]:
+                    image = self.capture.capture(region_override=region)
+                    line = self._extract_single_effect_line(image)
+                    if line:
+                        lines.append(line)
+                    logger.info("Region OCR done (slot=%s, line=%s)", index, line or "<empty>")
+            else:
+                image = self.capture.capture()
+                lines = self.ocr_engine.extract_effect_texts(image, max_effects=3)
+                logger.info("Whole-area OCR done (lines=%s)", len(lines))
+
+            raw_text = "\n".join(lines)
             candidates = parse_ocr_text(raw_text, max_effects=3)
             elapsed = time.monotonic() - started
             logger.info(
-                "Processing success (token=%s, elapsed_sec=%.3f, raw_len=%s, extracted_lines=%s, candidates=%s)",
+                "Processing success (token=%s, elapsed_sec=%.3f, raw_len=%s, lines=%s, candidates=%s)",
                 token,
                 elapsed,
                 len(raw_text),
-                len(extracted_lines),
+                len(lines),
                 len(candidates),
             )
             self.root.after(0, lambda: self._handle_processing_success(token, candidates, raw_text))
@@ -416,3 +548,4 @@ class AppController:
         self.main_window.show_error(message)
         self._set_status("waiting_capture", reason="error dialog closed")
         self._update_view()
+
