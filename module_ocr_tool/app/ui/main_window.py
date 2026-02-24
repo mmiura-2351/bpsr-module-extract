@@ -16,11 +16,13 @@ class MainWindow(ttk.Frame):
         on_start: Callable[[], None],
         on_export: Callable[[], None],
         on_apply_region: Callable[[bool, str, str, str, str], None],
+        on_drag_select_region: Callable[[], None],
     ) -> None:
         super().__init__(master)
         self._on_start = on_start
         self._on_export = on_export
         self._on_apply_region = on_apply_region
+        self._on_drag_select_region = on_drag_select_region
 
         self.status_var = tk.StringVar(value="待機中")
         self.module_count_var = tk.StringVar(value="0")
@@ -82,6 +84,9 @@ class MainWindow(ttk.Frame):
         ttk.Button(region_frame, text="範囲を適用", command=self._emit_apply_region).grid(
             row=3, column=3, sticky="e", pady=(6, 2)
         )
+        ttk.Button(region_frame, text="ドラッグ選択", command=self._on_drag_select_region).grid(
+            row=3, column=2, sticky="e", pady=(6, 2), padx=(0, 6)
+        )
         ttk.Label(region_frame, textvariable=self.region_summary_var).grid(row=3, column=0, columnspan=3, sticky="w")
 
         ttk.Label(self, text="直近OCR生テキスト:").grid(row=8, column=0, sticky="nw", pady=(8, 0))
@@ -113,6 +118,13 @@ class MainWindow(ttk.Frame):
 
     def set_region_summary(self, summary: str) -> None:
         self.region_summary_var.set(summary)
+
+    def set_region_inputs(self, *, use_custom: bool, left: int, top: int, width: int, height: int) -> None:
+        self.use_custom_region_var.set(use_custom)
+        self.region_left_var.set(str(left))
+        self.region_top_var.set(str(top))
+        self.region_width_var.set(str(width))
+        self.region_height_var.set(str(height))
 
     def set_last_ocr_text(self, text: str | None) -> None:
         display = text.strip() if text else "-"
