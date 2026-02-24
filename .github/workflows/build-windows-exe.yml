@@ -1,0 +1,82 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install Tesseract
+        shell: pwsh
+        run: choco install tesseract --yes --no-progress
+
+      - name: Bundle Tesseract to vendor directory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vendor = "module_ocr_tool/vendor/tesseract"
+          New-Item -ItemType Directory -Force $vendor | Out-Null
+
+          $tesseractSourceCandidates = @()
+          $cmd = Get-Command tesseract.exe -ErrorAction SilentlyContinue
+          if ($cmd) {
+            $tesseractSourceCandidates += Split-Path -Parent $cmd.Source
+          }
+          $tesseractSourceCandidates += @(
+            "$env:ProgramFiles\Tesseract-OCR",
+            "$env:ProgramFiles(x86)\Tesseract-OCR",
+            "$env:ChocolateyInstall\lib\tesseract\tools"
+          )
+
+          $source = $null
+          foreach ($candidate in $tesseractSourceCandidates) {
+            if (!$candidate) { continue }
+            if ((Test-Path (Join-Path $candidate "tesseract.exe")) -and (Test-Path (Join-Path $candidate "tessdata"))) {
+              $source = $candidate
+              break
+            }
+          }
+          if (!$source) {
+            throw "Tesseract source directory not found."
+          }
+
+          Copy-Item (Join-Path $source "*") $vendor -Recurse -Force
+
+          $jpnData = Join-Path $vendor "tessdata/jpn.traineddata"
+          if (!(Test-Path $jpnData)) {
+            New-Item -ItemType Directory -Force (Split-Path -Parent $jpnData) | Out-Null
+            Invoke-WebRequest `
+              "https://github.com/tesseract-ocr/tessdata_fast/raw/main/jpn.traineddata" `
+              -OutFile $jpnData
+          }
+
+      - name: Run tests
+        shell: pwsh
+        run: uv run --with pytest pytest -q module_ocr_tool/tests
+
+      - name: Build onefile exe
+        shell: pwsh
+        run: ./scripts/build_windows_onefile.ps1 -Clean
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ModuleOcrTool-windows
+          path: dist/ModuleOcrTool.exe
+          if-no-files-found: error
