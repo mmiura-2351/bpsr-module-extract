@@ -8,6 +8,7 @@ from typing import Callable
 from module_ocr_tool.app.mappings import EFFECT_ID_TO_JP, JP_TO_EFFECT_ID
 from module_ocr_tool.app.models import EffectEntry
 from module_ocr_tool.app.normalizer import ParsedEffectCandidate
+from module_ocr_tool.app.validation import validate_effect_entries_for_module
 
 
 @dataclass
@@ -144,7 +145,7 @@ class ResultDialog(tk.Toplevel):
             if not jp_label and not effect_id and not value_text:
                 continue
 
-            if blank_value or value_text == "":
+            if blank_value:
                 # 空欄値は「この行を出力しない」扱いにする。
                 continue
 
@@ -152,6 +153,10 @@ class ResultDialog(tk.Toplevel):
                 effect_id = JP_TO_EFFECT_ID.get(jp_label, "")
             if not effect_id:
                 messagebox.showerror("入力エラー", "effect_id を入力してください。")
+                return
+
+            if value_text == "":
+                messagebox.showerror("入力エラー", "value を入力するか「値空欄」を選択してください。")
                 return
 
             try:
@@ -162,8 +167,9 @@ class ResultDialog(tk.Toplevel):
 
             effects.append(EffectEntry(effect_id=effect_id, value=value))
 
-        if len(effects) > 3:
-            messagebox.showerror("入力エラー", "effects は最大3件です。")
+        validation_error = validate_effect_entries_for_module(effects)
+        if validation_error is not None:
+            messagebox.showerror("入力エラー", validation_error)
             return
 
         self._on_confirm_callback(effects)
