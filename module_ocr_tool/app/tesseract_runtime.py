@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 import shutil
 import sys
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _project_package_root() -> Path:
@@ -65,10 +68,13 @@ def _resolve_tesseract_cmd() -> str | None:
 
     for candidate in _candidate_executable_paths():
         if candidate.exists() and candidate.is_file():
+            logger.info("Using bundled tesseract binary: %s", candidate)
             return str(candidate)
 
     if path_cmd:
+        logger.info("Using PATH tesseract binary: %s", path_cmd)
         return path_cmd
+    logger.error("Tesseract binary not found")
     return None
 
 
@@ -102,5 +108,10 @@ def configure_pytesseract(pytesseract_module: Any) -> str:
     tessdata_dir = _resolve_tessdata_dir(Path(tesseract_cmd))
     if tessdata_dir is not None and "TESSDATA_PREFIX" not in os.environ:
         os.environ["TESSDATA_PREFIX"] = str(tessdata_dir)
+        logger.info("Set TESSDATA_PREFIX: %s", tessdata_dir)
+    elif tessdata_dir is None:
+        logger.warning("tessdata directory not found for tesseract: %s", tesseract_cmd)
+    else:
+        logger.info("TESSDATA_PREFIX already set: %s", os.environ.get("TESSDATA_PREFIX"))
+    logger.debug("pytesseract command configured: %s", tesseract_cmd)
     return tesseract_cmd
-

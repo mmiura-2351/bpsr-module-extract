@@ -71,3 +71,10 @@ uv run --with pyinstaller pyinstaller --noconfirm --clean build/module_ocr_tool.
 - アプリ起動時、`module_ocr_tool/app/tesseract_runtime.py` が Tesseract を自動検出
 - 同梱優先で `pytesseract.pytesseract.tesseract_cmd` を設定
 - `tessdata` が見つかれば `TESSDATA_PREFIX` も自動設定
+
+## 6. デバッグログ
+
+- ログファイルは自動で出力される
+- Windows実行時の既定出力先:
+  - `%LOCALAPPDATA%/ModuleOcrTool/logs/module_ocr_tool.log`
+- 環境変数 `MODULE_OCR_LOG_DIR` を設定すると出力先を上書き可能

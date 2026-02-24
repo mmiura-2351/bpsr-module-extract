@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import TypedDict
+
+logger = logging.getLogger(__name__)
 
 
 class CaptureRegion(TypedDict):
@@ -17,6 +20,7 @@ class ScreenCapture:
     region: CaptureRegion | None = None
 
     def capture(self):
+        logger.debug("Capture requested (monitor_index=%s, custom_region=%s)", self.monitor_index, self.region)
         try:
             import mss
             import numpy as np
@@ -25,9 +29,10 @@ class ScreenCapture:
 
         with mss.mss() as sct:
             target = self.region if self.region is not None else sct.monitors[self.monitor_index]
+            logger.debug("Capture target resolved: %s", target)
             screenshot = sct.grab(target)
             image = np.array(screenshot)
             if image.shape[-1] == 4:
                 image = image[:, :, :3]
+            logger.debug("Capture finished (shape=%s)", image.shape)
             return image
-
