@@ -57,7 +57,6 @@ a = Analysis(
         "numpy",
         "pytesseract",
         "mss",
-        "keyboard",
     ],
     hookspath=[],
     hooksconfig={},

@@ -34,7 +34,7 @@ class RegionSelectorOverlay(tk.Toplevel):
             20,
             20,
             anchor="nw",
-            text="ドラッグしてOCR範囲を選択 / ESCでキャンセル",
+            text="ドラッグしてOCR範囲を選択 / 右クリックでキャンセル",
             fill="white",
             font=("", 14, "bold"),
         )

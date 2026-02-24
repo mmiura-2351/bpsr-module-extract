@@ -31,7 +31,7 @@ class MainWindow(ttk.Frame):
 
         self.status_var = tk.StringVar(value="待機中")
         self.module_count_var = tk.StringVar(value="0")
-        self.hotkey_note_var = tk.StringVar(value="F8: スクリーンショット取得 / ESC: 終了")
+        self.hotkey_note_var = tk.StringVar(value="OCR実行ボタンを使用してください。")
         self.log_path_var = tk.StringVar(value="-")
         self.region_summary_var = tk.StringVar(value="範囲1:未設定 / 範囲2:未設定 / 範囲3:未設定")
         self.last_ocr_var = tk.StringVar(value="-")
@@ -58,7 +58,7 @@ class MainWindow(ttk.Frame):
         start_button = ttk.Button(action_frame, text="処理開始", command=self._on_start)
         start_button.grid(row=0, column=0, sticky="w")
 
-        manual_button = ttk.Button(action_frame, text="OCR実行 (F8代替)", command=self._on_manual_run)
+        manual_button = ttk.Button(action_frame, text="OCR実行", command=self._on_manual_run)
         manual_button.grid(row=0, column=1, sticky="w")
 
         export_button = ttk.Button(action_frame, text="JSON出力(新規)", command=self._on_export)

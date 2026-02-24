@@ -78,8 +78,7 @@ jobs:
             --with mss `
             --with opencv-python `
             --with pytesseract `
-            --with keyboard `
-            python -c "import numpy, mss, cv2, pytesseract, keyboard; print('deps ok')"
+            python -c "import numpy, mss, cv2, pytesseract; print('deps ok')"
 
       - name: Build onefile exe
         shell: pwsh

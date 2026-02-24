@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
 import tkinter as tk
-from typing import Any
 
 from module_ocr_tool.app.config_store import load_app_config, save_app_config
 from module_ocr_tool.app.capture import CaptureRegion, ScreenCapture
@@ -27,17 +25,6 @@ logger = logging.getLogger(__name__)
 
 
 class AppController:
-    HOTKEY_POLL_INTERVAL_MS = 50
-
-    VK_F8 = 0x77
-    VK_ESCAPE = 0x1B
-
-    WM_HOTKEY = 0x0312
-    PM_REMOVE = 0x0001
-    MOD_NOREPEAT = 0x4000
-    HOTKEY_ID_F8 = 20001
-    HOTKEY_ID_ESC = 20002
-
     def __init__(self, root: tk.Tk, *, log_path: str | None = None) -> None:
         self.root = root
         self.log_path = log_path
@@ -49,15 +36,6 @@ class AppController:
         loaded_regions = list(self._config.effect_regions)
         self._effect_regions: list[CaptureRegion | None] = (loaded_regions + [None, None, None])[:3]
         self._processing_token = 0
-
-        self._user32 = self._load_user32()
-        self._hotkey_backend = "none"
-        self._keyboard_module: Any | None = None
-        self._keyboard_hotkey_ids: list[Any] = []
-        self._win_hotkeys_registered = False
-        self._hotkey_loop_started = False
-        self._last_f8_down = False
-        self._last_esc_down = False
 
         self._region_selector: RegionSelectorOverlay | None = None
         self._region_selector_slot = -1
@@ -73,20 +51,12 @@ class AppController:
         )
         self.main_window.pack(fill="both", expand=True, padx=16, pady=16)
 
-        self.root.bind("<F8>", self.on_hotkey_f8)
-        self.root.bind("<Escape>", self.stop_capture_mode)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        logger.info(
-            "Controller initialized (platform=%s, log_path=%s, config_path=%s)",
-            os.name,
-            self.log_path,
-            self._config_path,
-        )
+        logger.info("Controller initialized (log_path=%s, config_path=%s)", self.log_path, self._config_path)
 
     def _on_close(self) -> None:
         logger.info("Application closing")
         self._save_config()
-        self._cleanup_hotkeys()
         self.root.destroy()
 
     def _save_config(self) -> None:
@@ -108,168 +78,10 @@ class AppController:
         except Exception:
             logger.exception("Failed to save config: %s", self._config_path)
 
-    def _cleanup_hotkeys(self) -> None:
-        if self._win_hotkeys_registered and self._user32 is not None:
-            self._user32.UnregisterHotKey(None, self.HOTKEY_ID_F8)
-            self._user32.UnregisterHotKey(None, self.HOTKEY_ID_ESC)
-            self._win_hotkeys_registered = False
-            logger.info("Unregistered Win32 hotkeys")
-
-        if self._keyboard_module is not None:
-            for hotkey_id in self._keyboard_hotkey_ids:
-                try:
-                    self._keyboard_module.remove_hotkey(hotkey_id)
-                except Exception:
-                    logger.exception("Failed to remove keyboard hotkey id=%s", hotkey_id)
-            self._keyboard_hotkey_ids.clear()
-
-    def _load_user32(self) -> Any | None:
-        if os.name != "nt":
-            return None
-        try:
-            import ctypes
-        except Exception:
-            logger.exception("ctypes import failed; Win32 hotkeys disabled")
-            return None
-        windll = getattr(ctypes, "windll", None)
-        if windll is None:
-            logger.warning("ctypes.windll unavailable; Win32 hotkeys disabled")
-            return None
-        return windll.user32
-
     def run(self) -> None:
         logger.info("Controller run")
-        self._register_global_hotkeys()
         self._sync_region_inputs_to_ui()
         self._update_view()
-
-    def _register_global_hotkeys(self) -> None:
-        if self._register_win_hotkeys():
-            self._hotkey_backend = "register-hotkey"
-            logger.info("Global hotkeys registered via Win32 RegisterHotKey")
-            return
-
-        if self._register_keyboard_hotkeys():
-            self._hotkey_backend = "keyboard"
-            logger.info("Global hotkeys registered via keyboard module")
-            return
-
-        if self._user32 is not None:
-            self._hotkey_backend = "win32-polling"
-            logger.warning("Falling back to Win32 polling for global hotkeys")
-            self._start_hotkey_polling()
-            return
-
-        self._hotkey_backend = "window-only"
-        logger.warning("Global hotkeys unavailable; only active when app window is focused")
-
-    def _register_win_hotkeys(self) -> bool:
-        if self._user32 is None:
-            return False
-
-        ok_f8 = bool(self._user32.RegisterHotKey(None, self.HOTKEY_ID_F8, self.MOD_NOREPEAT, self.VK_F8))
-        ok_esc = bool(self._user32.RegisterHotKey(None, self.HOTKEY_ID_ESC, self.MOD_NOREPEAT, self.VK_ESCAPE))
-        if ok_f8 and ok_esc:
-            self._win_hotkeys_registered = True
-            self._start_hotkey_polling()
-            return True
-
-        if ok_f8:
-            self._user32.UnregisterHotKey(None, self.HOTKEY_ID_F8)
-        if ok_esc:
-            self._user32.UnregisterHotKey(None, self.HOTKEY_ID_ESC)
-        self._win_hotkeys_registered = False
-        logger.warning("Win32 RegisterHotKey failed for F8/ESC")
-        return False
-
-    def _register_keyboard_hotkeys(self) -> bool:
-        try:
-            import keyboard  # type: ignore[import-not-found]
-        except Exception:
-            logger.exception("keyboard import failed")
-            return False
-
-        try:
-            f8_id = keyboard.add_hotkey(
-                "f8",
-                lambda: self.root.after(0, lambda: self.on_hotkey_f8(source="global-keyboard")),
-                suppress=False,
-                trigger_on_release=False,
-            )
-            esc_id = keyboard.add_hotkey(
-                "esc",
-                lambda: self.root.after(0, lambda: self.stop_capture_mode(source="global-keyboard")),
-                suppress=False,
-                trigger_on_release=False,
-            )
-            self._keyboard_module = keyboard
-            self._keyboard_hotkey_ids = [f8_id, esc_id]
-            return True
-        except Exception:
-            logger.exception("keyboard hotkey registration failed")
-            return False
-
-    def _start_hotkey_polling(self) -> None:
-        if self._hotkey_loop_started:
-            return
-        self._hotkey_loop_started = True
-        self.root.after(self.HOTKEY_POLL_INTERVAL_MS, self._poll_hotkeys)
-
-    def _poll_hotkeys(self) -> None:
-        try:
-            if self._win_hotkeys_registered:
-                self._poll_win_hotkey_messages()
-            elif self._hotkey_backend == "win32-polling":
-                self._poll_win_key_state()
-        except Exception:
-            logger.exception("Hotkey polling error")
-        finally:
-            try:
-                if self.root.winfo_exists():
-                    self.root.after(self.HOTKEY_POLL_INTERVAL_MS, self._poll_hotkeys)
-            except tk.TclError:
-                return
-
-    def _poll_win_hotkey_messages(self) -> None:
-        if self._user32 is None:
-            return
-        import ctypes
-        from ctypes import wintypes
-
-        class MSG(ctypes.Structure):
-            _fields_ = [
-                ("hwnd", wintypes.HWND),
-                ("message", wintypes.UINT),
-                ("wParam", wintypes.WPARAM),
-                ("lParam", wintypes.LPARAM),
-                ("time", wintypes.DWORD),
-                ("pt", wintypes.POINT),
-            ]
-
-        msg = MSG()
-        while self._user32.PeekMessageW(ctypes.byref(msg), None, self.WM_HOTKEY, self.WM_HOTKEY, self.PM_REMOVE):
-            if int(msg.wParam) == self.HOTKEY_ID_F8:
-                self.on_hotkey_f8(source="register-hotkey")
-            elif int(msg.wParam) == self.HOTKEY_ID_ESC:
-                self.stop_capture_mode(source="register-hotkey")
-
-    def _poll_win_key_state(self) -> None:
-        if self._user32 is None:
-            return
-        f8_down = self._is_vk_down(self.VK_F8)
-        esc_down = self._is_vk_down(self.VK_ESCAPE)
-        if f8_down and not self._last_f8_down:
-            self.on_hotkey_f8(source="win32-polling")
-        if esc_down and not self._last_esc_down:
-            self.stop_capture_mode(source="win32-polling")
-        self._last_f8_down = f8_down
-        self._last_esc_down = esc_down
-
-    def _is_vk_down(self, virtual_key: int) -> bool:
-        if self._user32 is None:
-            return False
-        state = self._user32.GetAsyncKeyState(virtual_key)
-        return bool(state & 0x8000)
 
     def _status_label(self) -> str:
         labels = {
@@ -298,14 +110,8 @@ class AppController:
                 )
         return " / ".join(segments)
 
-    def _hotkey_note(self) -> str:
-        if self._hotkey_backend == "register-hotkey":
-            return "F8/ESC: グローバル有効（Win32 RegisterHotKey） / OCR実行ボタンでも可"
-        if self._hotkey_backend == "keyboard":
-            return "F8/ESC: グローバル有効（keyboard） / OCR実行ボタンでも可"
-        if self._hotkey_backend == "win32-polling":
-            return "F8/ESC: グローバル有効（Win32 polling） / OCR実行ボタンでも可"
-        return "F8/ESC は本ウィンドウ選択中のみ有効 / OCR実行ボタン推奨"
+    def _operation_note(self) -> str:
+        return "OCR実行ボタンを使用してください。"
 
     def _sync_region_inputs_to_ui(self) -> None:
         for index, region in enumerate(self._effect_regions):
@@ -327,7 +133,7 @@ class AppController:
         self.main_window.set_last_ocr_text(self.state.last_raw_ocr_text)
         self.main_window.set_log_path(self.log_path or "-")
         self.main_window.set_region_summary(self._format_region_summary())
-        self.main_window.set_hotkey_note(self._hotkey_note())
+        self.main_window.set_hotkey_note(self._operation_note())
 
     def apply_capture_region_from_ui(
         self,
@@ -442,11 +248,10 @@ class AppController:
         self._update_view()
 
     def run_manual_capture(self) -> None:
-        # Hotkey が使えない環境向けに、同一処理を手動ボタンで実行する。
         if self.state.status == "idle":
             self.start_capture_mode()
         if self.state.status == "waiting_capture":
-            self.on_hotkey_f8(source="manual-button")
+            self._start_processing(source="manual-button")
             return
         if self.state.status == "processing":
             self.main_window.show_error("OCR処理中です。完了まで待ってください。")
@@ -456,19 +261,11 @@ class AppController:
             return
         self.main_window.show_error("現在はOCR実行できない状態です。")
 
-    def stop_capture_mode(self, _event: tk.Event | None = None, *, source: str = "ui") -> None:
-        if self.state.status == "processing":
-            self._processing_token += 1
-            logger.info("Stop capture requested while processing (token=%s, source=%s)", self._processing_token, source)
-        self._set_status("idle", reason=f"stop capture mode ({source})")
-        self._update_view()
-
-    def on_hotkey_f8(self, _event: tk.Event | None = None, *, source: str = "ui") -> None:
+    def _start_processing(self, *, source: str) -> None:
         if self.state.status != "waiting_capture":
-            logger.debug("F8 ignored in status=%s source=%s", self.state.status, source)
             return
 
-        self._set_status("processing", reason=f"F8 pressed ({source})")
+        self._set_status("processing", reason=f"OCR run ({source})")
         self._update_view()
 
         self._processing_token += 1

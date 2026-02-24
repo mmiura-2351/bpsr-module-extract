@@ -26,7 +26,6 @@ try {
     "--with", "mss",
     "--with", "opencv-python",
     "--with", "pytesseract",
-    "--with", "keyboard",
     "pyinstaller",
     "--noconfirm"
   )
