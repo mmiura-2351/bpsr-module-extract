@@ -18,7 +18,14 @@ if not exist "%JPN_DATA%" (
 )
 
 pushd "%PROJECT_ROOT%"
-uv run --with pyinstaller pyinstaller --noconfirm --clean "%SPEC_PATH%"
+uv run ^
+  --with pyinstaller ^
+  --with numpy ^
+  --with mss ^
+  --with opencv-python ^
+  --with pytesseract ^
+  --with keyboard ^
+  pyinstaller --noconfirm --clean "%SPEC_PATH%"
 set "BUILD_EXIT=%ERRORLEVEL%"
 popd
 
@@ -28,4 +35,3 @@ if not "%BUILD_EXIT%"=="0" (
 
 echo Build complete: dist\ModuleOcrTool.exe
 exit /b 0
-

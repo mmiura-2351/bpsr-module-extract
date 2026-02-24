@@ -57,7 +57,14 @@ scripts\build_windows_onefile.bat
 内部的には以下を実行:
 
 ```bash
-uv run --with pyinstaller pyinstaller --noconfirm --clean build/module_ocr_tool.onefile.spec
+uv run \
+  --with pyinstaller \
+  --with numpy \
+  --with mss \
+  --with opencv-python \
+  --with pytesseract \
+  --with keyboard \
+  pyinstaller --noconfirm --clean build/module_ocr_tool.onefile.spec
 ```
 
 ## 4. 生成物
@@ -78,3 +85,9 @@ uv run --with pyinstaller pyinstaller --noconfirm --clean build/module_ocr_tool.
 - Windows実行時の既定出力先:
   - `%LOCALAPPDATA%/ModuleOcrTool/logs/module_ocr_tool.log`
 - 環境変数 `MODULE_OCR_LOG_DIR` を設定すると出力先を上書き可能
+
+## 7. トラブルシュート
+
+- `No module named 'mss'` や `No module named 'keyboard'` が出る場合:
+  - ビルド時に依存同梱付きコマンドを使っていない可能性がある
+  - `scripts/build_windows_onefile.ps1` / `scripts/build_windows_onefile.bat` を使って再ビルドする

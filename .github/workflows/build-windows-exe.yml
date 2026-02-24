@@ -70,6 +70,17 @@ jobs:
         shell: pwsh
         run: uv run --with pytest pytest -q module_ocr_tool/tests
 
+      - name: Verify build dependencies import
+        shell: pwsh
+        run: |
+          uv run `
+            --with numpy `
+            --with mss `
+            --with opencv-python `
+            --with pytesseract `
+            --with keyboard `
+            python -c "import numpy, mss, cv2, pytesseract, keyboard; print('deps ok')"
+
       - name: Build onefile exe
         shell: pwsh
         run: ./scripts/build_windows_onefile.ps1 -Clean

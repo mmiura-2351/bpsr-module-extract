@@ -20,7 +20,16 @@ if (!(Test-Path $requiredJpn)) {
 
 Push-Location $projectRoot
 try {
-  $args = @("--with", "pyinstaller", "pyinstaller", "--noconfirm")
+  $args = @(
+    "--with", "pyinstaller",
+    "--with", "numpy",
+    "--with", "mss",
+    "--with", "opencv-python",
+    "--with", "pytesseract",
+    "--with", "keyboard",
+    "pyinstaller",
+    "--noconfirm"
+  )
   if ($Clean) {
     $args += "--clean"
   }
@@ -31,4 +40,3 @@ try {
 }
 
 Write-Host "Build complete: dist/ModuleOcrTool.exe"
-
