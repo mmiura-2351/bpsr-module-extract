@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable
@@ -16,6 +17,7 @@ class MainWindow(ttk.Frame):
         on_start: Callable[[], None],
         on_manual_run: Callable[[], None],
         on_export: Callable[[], None],
+        on_update_export: Callable[[], None],
         on_apply_region: Callable[[int, bool, str, str, str, str], None],
         on_drag_select_region: Callable[[int], None],
     ) -> None:
@@ -23,6 +25,7 @@ class MainWindow(ttk.Frame):
         self._on_start = on_start
         self._on_manual_run = on_manual_run
         self._on_export = on_export
+        self._on_update_export = on_update_export
         self._on_apply_region = on_apply_region
         self._on_drag_select_region = on_drag_select_region
 
@@ -50,6 +53,7 @@ class MainWindow(ttk.Frame):
         action_frame.grid_columnconfigure(0, weight=1)
         action_frame.grid_columnconfigure(1, weight=1)
         action_frame.grid_columnconfigure(2, weight=1)
+        action_frame.grid_columnconfigure(3, weight=1)
 
         start_button = ttk.Button(action_frame, text="処理開始", command=self._on_start)
         start_button.grid(row=0, column=0, sticky="w")
@@ -57,8 +61,11 @@ class MainWindow(ttk.Frame):
         manual_button = ttk.Button(action_frame, text="OCR実行 (F8代替)", command=self._on_manual_run)
         manual_button.grid(row=0, column=1, sticky="w")
 
-        export_button = ttk.Button(action_frame, text="JSON出力", command=self._on_export)
-        export_button.grid(row=0, column=2, sticky="e")
+        export_button = ttk.Button(action_frame, text="JSON出力(新規)", command=self._on_export)
+        export_button.grid(row=0, column=2, sticky="e", padx=(0, 8))
+
+        update_export_button = ttk.Button(action_frame, text="既存JSON更新", command=self._on_update_export)
+        update_export_button.grid(row=0, column=3, sticky="e")
 
         ttk.Separator(self).grid(row=2, column=0, columnspan=2, sticky="ew", pady=12)
 
@@ -167,12 +174,31 @@ class MainWindow(ttk.Frame):
         display = text.strip() if text else "-"
         self.last_ocr_var.set(display)
 
-    def ask_export_path(self) -> str:
-        return filedialog.asksaveasfilename(
-            title="JSON出力先を選択",
-            defaultextension=".json",
-            filetypes=[("JSON", "*.json"), ("All files", "*.*")],
-        )
+    def ask_export_path(self, initial_path: str | None = None) -> str:
+        options: dict[str, object] = {
+            "title": "JSON出力先を選択",
+            "defaultextension": ".json",
+            "filetypes": [("JSON", "*.json"), ("All files", "*.*")],
+        }
+        if initial_path:
+            initial = Path(initial_path)
+            if initial.parent.exists():
+                options["initialdir"] = str(initial.parent)
+            options["initialfile"] = initial.name
+        return filedialog.asksaveasfilename(**options)
+
+    def ask_existing_json_path(self, initial_path: str | None = None) -> str:
+        options: dict[str, object] = {
+            "title": "更新対象の既存JSONを選択",
+            "filetypes": [("JSON", "*.json"), ("All files", "*.*")],
+        }
+        if initial_path:
+            initial = Path(initial_path)
+            if initial.parent.exists():
+                options["initialdir"] = str(initial.parent)
+            if initial.exists():
+                options["initialfile"] = initial.name
+        return filedialog.askopenfilename(**options)
 
     def show_info(self, message: str) -> None:
         logger.info("Show info dialog: %s", message.replace("\n", " "))

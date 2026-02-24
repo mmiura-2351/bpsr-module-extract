@@ -7,8 +7,14 @@ import time
 import tkinter as tk
 from typing import Any
 
+from module_ocr_tool.app.config_store import load_app_config, save_app_config
 from module_ocr_tool.app.capture import CaptureRegion, ScreenCapture
-from module_ocr_tool.app.exporter import build_export_payload, write_export_json
+from module_ocr_tool.app.exporter import (
+    append_modules_to_existing_json,
+    build_export_payload,
+    is_duplicate_module,
+    write_export_json,
+)
 from module_ocr_tool.app.models import EffectEntry, ModuleRecord
 from module_ocr_tool.app.normalizer import ParsedEffectCandidate, parse_ocr_text
 from module_ocr_tool.app.ocr_engine import TesseractOcrEngine
@@ -35,11 +41,13 @@ class AppController:
     def __init__(self, root: tk.Tk, *, log_path: str | None = None) -> None:
         self.root = root
         self.log_path = log_path
+        self._config, self._config_path = load_app_config()
         self.state = AppState()
         self.capture = ScreenCapture()
         self.ocr_engine = TesseractOcrEngine()
 
-        self._effect_regions: list[CaptureRegion | None] = [None, None, None]
+        loaded_regions = list(self._config.effect_regions)
+        self._effect_regions: list[CaptureRegion | None] = (loaded_regions + [None, None, None])[:3]
         self._processing_token = 0
 
         self._user32 = self._load_user32()
@@ -59,6 +67,7 @@ class AppController:
             on_start=self.start_capture_mode,
             on_manual_run=self.run_manual_capture,
             on_export=self._handle_export_click,
+            on_update_export=self._handle_update_export_click,
             on_apply_region=self.apply_capture_region_from_ui,
             on_drag_select_region=self.open_region_selector,
         )
@@ -67,12 +76,37 @@ class AppController:
         self.root.bind("<F8>", self.on_hotkey_f8)
         self.root.bind("<Escape>", self.stop_capture_mode)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        logger.info("Controller initialized (platform=%s, log_path=%s)", os.name, self.log_path)
+        logger.info(
+            "Controller initialized (platform=%s, log_path=%s, config_path=%s)",
+            os.name,
+            self.log_path,
+            self._config_path,
+        )
 
     def _on_close(self) -> None:
         logger.info("Application closing")
+        self._save_config()
         self._cleanup_hotkeys()
         self.root.destroy()
+
+    def _save_config(self) -> None:
+        try:
+            self._config.effect_regions = [
+                (
+                    {
+                        "left": region["left"],
+                        "top": region["top"],
+                        "width": region["width"],
+                        "height": region["height"],
+                    }
+                    if region is not None
+                    else None
+                )
+                for region in self._effect_regions
+            ]
+            save_app_config(self._config, self._config_path)
+        except Exception:
+            logger.exception("Failed to save config: %s", self._config_path)
 
     def _cleanup_hotkeys(self) -> None:
         if self._win_hotkeys_registered and self._user32 is not None:
@@ -319,6 +353,7 @@ class AppController:
         if not use_custom_region:
             self._effect_regions[slot_index] = None
             self.main_window.set_region_inputs(slot_index, enabled=False, left=0, top=0, width=240, height=40)
+            self._save_config()
             self._update_view()
             return
 
@@ -366,6 +401,7 @@ class AppController:
             height=height,
         )
         logger.info("Capture region applied via %s (slot=%s): %s", source, slot_index + 1, region)
+        self._save_config()
         self._update_view()
 
     def open_region_selector(self, slot_index: int) -> None:
@@ -532,13 +568,19 @@ class AppController:
 
     def confirm_module(self, effects: list[EffectEntry]) -> None:
         module = ModuleRecord(module_category="general", effects=effects[:3])
+        if is_duplicate_module(module, self.state.modules):
+            logger.info("Duplicate module detected. Skip append.")
+            self.main_window.show_info("既存モジュールと重複しているため追加をスキップしました。")
+            self._set_status("waiting_capture", reason="duplicate module skipped")
+            self._update_view()
+            return
         self.state.modules.append(module)
         logger.info("Module confirmed (effects=%s, modules_total=%s)", len(module.effects), len(self.state.modules))
         self._set_status("waiting_capture", reason="module confirmed")
         self._update_view()
 
     def _handle_export_click(self) -> None:
-        output_path = self.main_window.ask_export_path()
+        output_path = self.main_window.ask_export_path(initial_path=self._config.last_export_path)
         if not output_path:
             logger.info("Export canceled by user")
             return
@@ -549,8 +591,37 @@ class AppController:
             self._handle_error(f"JSON出力に失敗しました: {exc}")
             return
 
+        self._config.last_export_path = output_path
+        self._save_config()
         self.main_window.show_info(f"JSONを出力しました:\n{output_path}")
         logger.info("Export completed: %s", output_path)
+
+    def _handle_update_export_click(self) -> None:
+        existing_path = self.main_window.ask_existing_json_path(initial_path=self._config.last_update_json_path)
+        if not existing_path:
+            logger.info("Update export canceled by user")
+            return
+
+        try:
+            added, skipped, total = append_modules_to_existing_json(existing_path, self.state.modules)
+        except Exception as exc:
+            self._handle_error(f"既存JSON更新に失敗しました: {exc}")
+            return
+
+        self._config.last_update_json_path = existing_path
+        self._save_config()
+        self.main_window.show_info(
+            "既存JSONを更新しました:\n"
+            f"{existing_path}\n"
+            f"追加: {added} / 重複・空: {skipped} / 合計: {total}"
+        )
+        logger.info(
+            "Existing JSON updated (path=%s, added=%s, skipped=%s, total=%s)",
+            existing_path,
+            added,
+            skipped,
+            total,
+        )
 
     def export_json(self, output_path: str) -> None:
         payload = build_export_payload(self.state.modules)
