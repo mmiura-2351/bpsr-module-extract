@@ -16,6 +16,7 @@ class MainWindow(ttk.Frame):
         *,
         on_start: Callable[[], None],
         on_manual_run: Callable[[], None],
+        on_debug_run: Callable[[], None],
         on_export: Callable[[], None],
         on_update_export: Callable[[], None],
         on_apply_region: Callable[[int, bool, str, str, str, str], None],
@@ -24,6 +25,7 @@ class MainWindow(ttk.Frame):
         super().__init__(master)
         self._on_start = on_start
         self._on_manual_run = on_manual_run
+        self._on_debug_run = on_debug_run
         self._on_export = on_export
         self._on_update_export = on_update_export
         self._on_apply_region = on_apply_region
@@ -54,6 +56,7 @@ class MainWindow(ttk.Frame):
         action_frame.grid_columnconfigure(1, weight=1)
         action_frame.grid_columnconfigure(2, weight=1)
         action_frame.grid_columnconfigure(3, weight=1)
+        action_frame.grid_columnconfigure(4, weight=1)
 
         start_button = ttk.Button(action_frame, text="処理開始", command=self._on_start)
         start_button.grid(row=0, column=0, sticky="w")
@@ -61,11 +64,14 @@ class MainWindow(ttk.Frame):
         manual_button = ttk.Button(action_frame, text="OCR実行", command=self._on_manual_run)
         manual_button.grid(row=0, column=1, sticky="w")
 
+        debug_button = ttk.Button(action_frame, text="デバッグOCR", command=self._on_debug_run)
+        debug_button.grid(row=0, column=2, sticky="w")
+
         export_button = ttk.Button(action_frame, text="JSON出力(新規)", command=self._on_export)
-        export_button.grid(row=0, column=2, sticky="e", padx=(0, 8))
+        export_button.grid(row=0, column=3, sticky="e", padx=(0, 8))
 
         update_export_button = ttk.Button(action_frame, text="既存JSON更新", command=self._on_update_export)
-        update_export_button.grid(row=0, column=3, sticky="e")
+        update_export_button.grid(row=0, column=4, sticky="e")
 
         ttk.Separator(self).grid(row=2, column=0, columnspan=2, sticky="ew", pady=12)
 

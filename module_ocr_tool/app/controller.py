@@ -39,6 +39,7 @@ class AppController:
         loaded_regions = list(self._config.effect_regions)
         self._effect_regions: list[CaptureRegion | None] = (loaded_regions + [None, None, None])[:3]
         self._processing_token = 0
+        self._processing_debug_flags: dict[int, bool] = {}
 
         self._region_selector: RegionSelectorOverlay | None = None
         self._region_selector_slot = -1
@@ -47,6 +48,7 @@ class AppController:
             root,
             on_start=self.start_capture_mode,
             on_manual_run=self.run_manual_capture,
+            on_debug_run=self.run_debug_capture,
             on_export=self._handle_export_click,
             on_update_export=self._handle_update_export_click,
             on_apply_region=self.apply_capture_region_from_ui,
@@ -254,7 +256,7 @@ class AppController:
         if self.state.status == "idle":
             self.start_capture_mode()
         if self.state.status == "waiting_capture":
-            self._start_processing(source="manual-button")
+            self._start_processing(source="manual-button", debug_capture=False)
             return
         if self.state.status == "processing":
             self.main_window.show_error("OCR処理中です。完了まで待ってください。")
@@ -264,7 +266,21 @@ class AppController:
             return
         self.main_window.show_error("現在はOCR実行できない状態です。")
 
-    def _start_processing(self, *, source: str) -> None:
+    def run_debug_capture(self) -> None:
+        if self.state.status == "idle":
+            self.start_capture_mode()
+        if self.state.status == "waiting_capture":
+            self._start_processing(source="debug-button", debug_capture=True)
+            return
+        if self.state.status == "processing":
+            self.main_window.show_error("OCR処理中です。完了まで待ってください。")
+            return
+        if self.state.status == "editing_result":
+            self.main_window.show_error("OCR結果確認中です。確定またはキャンセルしてください。")
+            return
+        self.main_window.show_error("現在はOCR実行できない状態です。")
+
+    def _start_processing(self, *, source: str, debug_capture: bool) -> None:
         if self.state.status != "waiting_capture":
             return
 
@@ -273,8 +289,15 @@ class AppController:
 
         self._processing_token += 1
         token = self._processing_token
+        self._processing_debug_flags[token] = debug_capture
         timeout_ms = self._compute_processing_timeout_ms()
-        logger.info("Processing started (token=%s, timeout_ms=%s, source=%s)", token, timeout_ms, source)
+        logger.info(
+            "Processing started (token=%s, timeout_ms=%s, source=%s, debug_capture=%s)",
+            token,
+            timeout_ms,
+            source,
+            debug_capture,
+        )
         self.root.after(timeout_ms, lambda: self._handle_processing_timeout(token))
 
         worker = threading.Thread(target=self._process_capture_background, args=(token,), daemon=True)
@@ -306,6 +329,55 @@ class AppController:
         fallback = self.ocr_engine.extract_effect_texts(image, max_effects=1)
         return fallback[0] if fallback else ""
 
+    def _log_base_dir(self) -> Path:
+        return Path(self.log_path).resolve().parent if self.log_path else Path.cwd() / "logs"
+
+    def _create_debug_output_dir(self, token: int) -> Path:
+        root = self._log_base_dir() / "ocr_debug_runs"
+        root.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        debug_dir = root / f"token{token}_{timestamp}"
+        debug_dir.mkdir(parents=True, exist_ok=False)
+        return debug_dir
+
+    def _save_debug_slot_output(
+        self,
+        debug_dir: Path,
+        *,
+        slot_index: int,
+        image,
+        line: str,
+    ) -> None:
+        try:
+            import cv2
+        except ImportError:
+            logger.warning("Skip debug slot output save (cv2 unavailable)")
+            return
+
+        image_path = debug_dir / f"slot{slot_index}_capture.png"
+        text_path = debug_dir / f"slot{slot_index}_ocr_text.txt"
+        cv2.imwrite(str(image_path), image)
+        text_path.write_text(line, encoding="utf-8")
+
+    def _write_debug_summary(
+        self,
+        debug_dir: Path,
+        *,
+        token: int,
+        lines: list[str],
+        raw_text: str,
+    ) -> None:
+        summary_path = debug_dir / "ocr_debug_summary.txt"
+        content = [
+            f"token={token}",
+            f"line_count={len(lines)}",
+            "",
+            "[lines]",
+        ]
+        content.extend(lines)
+        content.extend(["", "[raw_text]", raw_text])
+        summary_path.write_text("\n".join(content), encoding="utf-8")
+
     def _save_failed_ocr_sample(self, image, *, token: int, slot_index: int, reason: str, line: str) -> None:
         if image is None:
             return
@@ -316,11 +388,7 @@ class AppController:
                 logger.warning("Skip OCR debug sample save (cv2 unavailable)")
                 return
 
-            base_dir = (
-                Path(self.log_path).resolve().parent
-                if self.log_path
-                else Path.cwd() / "logs"
-            )
+            base_dir = self._log_base_dir()
             sample_dir = base_dir / "ocr_failed_samples"
             sample_dir.mkdir(parents=True, exist_ok=True)
 
@@ -347,7 +415,12 @@ class AppController:
 
     def _process_capture_background(self, token: int) -> None:
         started = time.monotonic()
+        debug_capture = self._processing_debug_flags.get(token, False)
+        debug_dir: Path | None = None
         try:
+            if debug_capture:
+                debug_dir = self._create_debug_output_dir(token)
+                logger.info("Debug capture enabled (token=%s, dir=%s)", token, debug_dir)
             logger.info("Capture thread start (token=%s)", token)
 
             lines: list[str] = []
@@ -373,6 +446,8 @@ class AppController:
                 for index, _region in configured[:3]:
                     image = slot_images[index]
                     line = slot_lines.get(index, "")
+                    if debug_dir is not None:
+                        self._save_debug_slot_output(debug_dir, slot_index=index, image=image, line=line)
                     if line:
                         lines.append(line)
                         candidate = parse_ocr_text(line, max_effects=1)
@@ -396,9 +471,18 @@ class AppController:
             else:
                 image = self.capture.capture()
                 lines = self.ocr_engine.extract_effect_texts(image, max_effects=3)
+                if debug_dir is not None:
+                    self._save_debug_slot_output(
+                        debug_dir,
+                        slot_index=0,
+                        image=image,
+                        line="\n".join(lines),
+                    )
                 logger.info("Whole-area OCR done (lines=%s)", len(lines))
 
             raw_text = "\n".join(lines)
+            if debug_dir is not None:
+                self._write_debug_summary(debug_dir, token=token, lines=lines, raw_text=raw_text)
             candidates = parse_ocr_text(raw_text, max_effects=3)
             elapsed = time.monotonic() - started
             logger.info(
@@ -409,7 +493,7 @@ class AppController:
                 len(lines),
                 len(candidates),
             )
-            self.root.after(0, lambda: self._handle_processing_success(token, candidates, raw_text))
+            self.root.after(0, lambda: self._handle_processing_success(token, candidates, raw_text, debug_dir))
         except Exception as exc:
             elapsed = time.monotonic() - started
             logger.exception("Processing failed (token=%s, elapsed_sec=%.3f)", token, elapsed)
@@ -418,6 +502,7 @@ class AppController:
     def _handle_processing_timeout(self, token: int) -> None:
         if token != self._processing_token or self.state.status != "processing":
             return
+        self._processing_debug_flags.pop(token, None)
         self._processing_token += 1
         logger.error("Processing timeout (token=%s)", token)
         self._handle_error("OCR処理がタイムアウトしました。OCR取得範囲を狭めて再実行してください。")
@@ -427,16 +512,22 @@ class AppController:
         token: int,
         candidates: list[ParsedEffectCandidate],
         raw_text: str,
+        debug_dir: Path | None,
     ) -> None:
         if token != self._processing_token or self.state.status != "processing":
             logger.info("Ignore stale success callback (token=%s, current=%s)", token, self._processing_token)
             return
+        debug_enabled = self._processing_debug_flags.pop(token, False)
+        if debug_enabled and debug_dir is not None:
+            logger.info("Debug OCR output saved: %s", debug_dir)
+            self.main_window.show_info(f"デバッグ出力を保存しました:\n{debug_dir}")
         self._show_result_dialog(candidates, raw_text)
 
     def _handle_processing_error(self, token: int, message: str) -> None:
         if token != self._processing_token or self.state.status != "processing":
             logger.info("Ignore stale error callback (token=%s, current=%s)", token, self._processing_token)
             return
+        self._processing_debug_flags.pop(token, None)
         self._handle_error(message)
 
     def _show_result_dialog(self, candidates: list[ParsedEffectCandidate], raw_text: str) -> None:
