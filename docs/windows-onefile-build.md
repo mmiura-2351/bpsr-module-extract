@@ -1,4 +1,4 @@
-# Windows: Tesseract同梱 + 単一exe化
+# Windows: Tesseract同梱ビルド
 
 ## 1. 前提
 
@@ -8,9 +8,12 @@
 
 ## 2. GitHub Actionsでビルド（ローカル環境構築不要）
 
-このリポジトリには GitHub Actions workflow を追加済み:
+このリポジトリには以下の GitHub Actions workflow を追加済み:
 
 - `.github/workflows/build-windows-exe.yml`
+- `.github/workflows/build-windows-onedir.yml`
+
+### 2.1 単一exe（onefile）
 
 実行方法:
 
@@ -30,6 +33,22 @@ Artifacts の zip には以下が含まれる:
 - workflow 内で `choco install tesseract` を実行
 - `module_ocr_tool/vendor/tesseract` へ自動コピー
 - `jpn.traineddata` が無ければ自動取得
+- onefile は `UPX無効` でビルドされる
+
+### 2.2 Defender警告を下げたい場合（onedir）
+
+実行方法:
+
+1. GitHub の `Actions` タブを開く
+2. `Build Windows Onedir` を選択
+3. `Run workflow` を実行
+4. 完了後、Artifacts から `ModuleOcrTool-windows-onedir` を取得
+
+Artifacts の zip には以下が含まれる:
+
+- `ModuleOcrTool/`（exe + 依存DLL一式）
+- `README.txt`
+- `ocr_range_guide.png`
 
 ## 3. ローカルWindowsでビルド
 
@@ -73,6 +92,20 @@ uv run \
   pyinstaller --noconfirm --clean build/module_ocr_tool.onefile.spec
 ```
 
+## 3.3 ローカルで onedir ビルド
+
+PowerShell:
+
+```powershell
+./scripts/build_windows_onedir.ps1 -Clean
+```
+
+または cmd:
+
+```bat
+scripts\build_windows_onedir.bat
+```
+
 ## 4. 生成物
 
 ローカルビルド時:
@@ -86,6 +119,16 @@ GitHub Actions artifacts:
 - `ocr_range_guide.png`
 
 `onefile` のため、実行時に展開される一時ディレクトリから同梱 Tesseract を参照する。
+
+ローカル onedir ビルド時:
+
+- `dist/ModuleOcrTool/`
+
+GitHub Actions onedir artifacts:
+
+- `ModuleOcrTool/`
+- `README.txt`
+- `ocr_range_guide.png`
 
 ## 5. 実行時挙動
 
@@ -105,3 +148,6 @@ GitHub Actions artifacts:
 - `No module named 'mss'` や `No module named 'rapidfuzz'` が出る場合:
   - ビルド時に依存同梱付きコマンドを使っていない可能性がある
   - `scripts/build_windows_onefile.ps1` / `scripts/build_windows_onefile.bat` を使って再ビルドする
+- Windows Defender / SmartScreen の警告が強い場合:
+  - まず `Build Windows Onedir` を使用する
+  - 可能ならコード署名を行う

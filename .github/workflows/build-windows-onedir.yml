@@ -1,0 +1,101 @@
+name: Build Windows Onedir
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows-onedir:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install Tesseract
+        shell: pwsh
+        run: choco install tesseract --yes --no-progress
+
+      - name: Bundle Tesseract to vendor directory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vendor = "module_ocr_tool/vendor/tesseract"
+          New-Item -ItemType Directory -Force $vendor | Out-Null
+
+          $tesseractSourceCandidates = @()
+          $cmd = Get-Command tesseract.exe -ErrorAction SilentlyContinue
+          if ($cmd) {
+            $tesseractSourceCandidates += Split-Path -Parent $cmd.Source
+          }
+          $tesseractSourceCandidates += @(
+            "$env:ProgramFiles\Tesseract-OCR",
+            "$env:ProgramFiles(x86)\Tesseract-OCR",
+            "$env:ChocolateyInstall\lib\tesseract\tools"
+          )
+
+          $source = $null
+          foreach ($candidate in $tesseractSourceCandidates) {
+            if (!$candidate) { continue }
+            if ((Test-Path (Join-Path $candidate "tesseract.exe")) -and (Test-Path (Join-Path $candidate "tessdata"))) {
+              $source = $candidate
+              break
+            }
+          }
+          if (!$source) {
+            throw "Tesseract source directory not found."
+          }
+
+          Copy-Item (Join-Path $source "*") $vendor -Recurse -Force
+
+          $jpnData = Join-Path $vendor "tessdata/jpn.traineddata"
+          if (!(Test-Path $jpnData)) {
+            New-Item -ItemType Directory -Force (Split-Path -Parent $jpnData) | Out-Null
+            Invoke-WebRequest `
+              "https://github.com/tesseract-ocr/tessdata_fast/raw/main/jpn.traineddata" `
+              -OutFile $jpnData
+          }
+
+      - name: Run tests
+        shell: pwsh
+        run: uv run --with pytest --with rapidfuzz pytest -q module_ocr_tool/tests
+
+      - name: Verify build dependencies import
+        shell: pwsh
+        run: |
+          uv run `
+            --with numpy `
+            --with mss `
+            --with opencv-python `
+            --with pytesseract `
+            --with rapidfuzz `
+            python -c "import numpy, mss, cv2, pytesseract, rapidfuzz; print('deps ok')"
+
+      - name: Build onedir bundle
+        shell: pwsh
+        run: ./scripts/build_windows_onedir.ps1 -Clean
+
+      - name: Prepare artifact package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $packageDir = "dist/package"
+          New-Item -ItemType Directory -Force $packageDir | Out-Null
+
+          Copy-Item "dist/ModuleOcrTool" (Join-Path $packageDir "ModuleOcrTool") -Recurse -Force
+          Copy-Item "README.txt" (Join-Path $packageDir "README.txt") -Force
+          Copy-Item "docs/assets/ocr_range_guide.png" (Join-Path $packageDir "ocr_range_guide.png") -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ModuleOcrTool-windows-onedir
+          path: dist/package/**
+          if-no-files-found: error
