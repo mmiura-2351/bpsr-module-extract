@@ -63,7 +63,7 @@ uv run \
   --with mss \
   --with opencv-python \
   --with pytesseract \
-  --with keyboard \
+  --with rapidfuzz \
   pyinstaller --noconfirm --clean build/module_ocr_tool.onefile.spec
 ```
 
@@ -88,6 +88,6 @@ uv run \
 
 ## 7. トラブルシュート
 
-- `No module named 'mss'` や `No module named 'keyboard'` が出る場合:
+- `No module named 'mss'` や `No module named 'rapidfuzz'` が出る場合:
   - ビルド時に依存同梱付きコマンドを使っていない可能性がある
   - `scripts/build_windows_onefile.ps1` / `scripts/build_windows_onefile.bat` を使って再ビルドする

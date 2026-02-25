@@ -68,7 +68,7 @@ jobs:
 
       - name: Run tests
         shell: pwsh
-        run: uv run --with pytest pytest -q module_ocr_tool/tests
+        run: uv run --with pytest --with rapidfuzz pytest -q module_ocr_tool/tests
 
       - name: Verify build dependencies import
         shell: pwsh
@@ -78,7 +78,8 @@ jobs:
             --with mss `
             --with opencv-python `
             --with pytesseract `
-            python -c "import numpy, mss, cv2, pytesseract; print('deps ok')"
+            --with rapidfuzz `
+            python -c "import numpy, mss, cv2, pytesseract, rapidfuzz; print('deps ok')"
 
       - name: Build onefile exe
         shell: pwsh

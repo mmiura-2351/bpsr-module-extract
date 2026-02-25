@@ -24,6 +24,7 @@ uv run ^
   --with mss ^
   --with opencv-python ^
   --with pytesseract ^
+  --with rapidfuzz ^
   pyinstaller --noconfirm --clean "%SPEC_PATH%"
 set "BUILD_EXIT=%ERRORLEVEL%"
 popd

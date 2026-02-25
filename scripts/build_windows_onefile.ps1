@@ -26,6 +26,7 @@ try {
     "--with", "mss",
     "--with", "opencv-python",
     "--with", "pytesseract",
+    "--with", "rapidfuzz",
     "pyinstaller",
     "--noconfirm"
   )

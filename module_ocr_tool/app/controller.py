@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import logging
+from pathlib import Path
 import threading
 import time
 import tkinter as tk
@@ -278,13 +280,50 @@ class AppController:
         worker.start()
 
     def _extract_single_effect_line(self, image) -> str:
-        text = self.ocr_engine.extract_text(image, config_override=self.ocr_engine.single_line_config)
-        for line in text.splitlines():
-            cleaned = line.strip()
-            if cleaned:
-                return cleaned
+        line = self.ocr_engine.extract_effect_line(image)
+        if line:
+            return line
         fallback = self.ocr_engine.extract_effect_texts(image, max_effects=1)
         return fallback[0] if fallback else ""
+
+    def _save_failed_ocr_sample(self, image, *, token: int, slot_index: int, reason: str, line: str) -> None:
+        if image is None:
+            return
+        try:
+            try:
+                import cv2
+            except ImportError:
+                logger.warning("Skip OCR debug sample save (cv2 unavailable)")
+                return
+
+            base_dir = (
+                Path(self.log_path).resolve().parent
+                if self.log_path
+                else Path.cwd() / "logs"
+            )
+            sample_dir = base_dir / "ocr_failed_samples"
+            sample_dir.mkdir(parents=True, exist_ok=True)
+
+            safe_reason = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in reason)[:32] or "unknown"
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            image_path = sample_dir / f"token{token}_slot{slot_index}_{safe_reason}_{timestamp}.png"
+            meta_path = sample_dir / f"token{token}_slot{slot_index}_{safe_reason}_{timestamp}.txt"
+
+            cv2.imwrite(str(image_path), image)
+            meta_path.write_text(
+                "\n".join(
+                    [
+                        f"token={token}",
+                        f"slot={slot_index}",
+                        f"reason={reason}",
+                        f"line={line}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            logger.info("Saved OCR debug sample (reason=%s, image=%s)", reason, image_path)
+        except Exception:
+            logger.exception("Failed to save OCR debug sample")
 
     def _process_capture_background(self, token: int) -> None:
         started = time.monotonic()
@@ -301,6 +340,23 @@ class AppController:
                     line = self._extract_single_effect_line(image)
                     if line:
                         lines.append(line)
+                        candidate = parse_ocr_text(line, max_effects=1)
+                        if not candidate or candidate[0].resolved_effect_id is None or candidate[0].parsed_value is None:
+                            self._save_failed_ocr_sample(
+                                image,
+                                token=token,
+                                slot_index=index,
+                                reason="unresolved_or_missing_value",
+                                line=line,
+                            )
+                    else:
+                        self._save_failed_ocr_sample(
+                            image,
+                            token=token,
+                            slot_index=index,
+                            reason="empty_result",
+                            line="",
+                        )
                     logger.info("Region OCR done (slot=%s, line=%s)", index, line or "<empty>")
             else:
                 image = self.capture.capture()

@@ -7,6 +7,13 @@ import re
 from module_ocr_tool.app.mappings import JP_TO_EFFECT_ID
 from module_ocr_tool.app.models import EffectEntry
 
+try:
+    from rapidfuzz import fuzz as _rapidfuzz_fuzz
+    from rapidfuzz import process as _rapidfuzz_process
+except Exception:  # pragma: no cover - optional dependency
+    _rapidfuzz_fuzz = None
+    _rapidfuzz_process = None
+
 VALUE_PATTERN = re.compile(r"([+-]?\d+)")
 LABEL_VARIANTS = str.maketrans(
     {
@@ -29,6 +36,8 @@ class ParsedEffectCandidate:
 
 def normalize_label(label: str) -> str:
     sanitized = label.translate(LABEL_VARIANTS)
+    sanitized = re.sub(r"[0-9０-９]", "", sanitized)
+    sanitized = re.sub(r"[+＋＊*xX×<＜>＞=~〜]+", "", sanitized)
     sanitized = re.sub(r"\s+", "", sanitized)
     return sanitized.strip(":：-")
 
@@ -64,9 +73,20 @@ def _build_candidates(
 ) -> list[str]:
     if not normalized_label:
         return []
+    keys = list(normalized_to_label.keys())
+    if _rapidfuzz_process is not None and _rapidfuzz_fuzz is not None:
+        matched = _rapidfuzz_process.extract(
+            normalized_label,
+            keys,
+            scorer=_rapidfuzz_fuzz.WRatio,
+            limit=candidate_limit,
+            score_cutoff=int(cutoff * 100),
+        )
+        return [normalized_to_label[str(key)] for key, _score, _idx in matched]
+
     matched_keys = difflib.get_close_matches(
         normalized_label,
-        normalized_to_label.keys(),
+        keys,
         n=candidate_limit,
         cutoff=cutoff,
     )
@@ -107,11 +127,12 @@ def parse_ocr_text(
             candidate_limit=candidate_limit,
             cutoff=cutoff,
         )
+        resolved_effect_id = JP_TO_EFFECT_ID[candidates[0]] if candidates else None
         parsed.append(
             ParsedEffectCandidate(
                 raw_line=raw_line,
                 parsed_value=parsed_value,
-                resolved_effect_id=None,
+                resolved_effect_id=resolved_effect_id,
                 jp_label_candidates=candidates,
             )
         )

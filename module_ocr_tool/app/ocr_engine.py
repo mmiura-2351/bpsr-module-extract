@@ -3,18 +3,31 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import re
+from typing import Any
 
 from module_ocr_tool.app.tesseract_runtime import configure_pytesseract
 
 logger = logging.getLogger(__name__)
 
+VALUE_PATTERN = re.compile(r"(\d{1,2})")
+FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
+@dataclass
+class _OcrAttempt:
+    text: str
+    confidence: float
+    score: float
+    variant_name: str
+
 
 @dataclass
 class TesseractOcrEngine:
-    lang: str = "jpn"
-    config: str = "--oem 3 --psm 6"
-    single_line_config: str = "--oem 3 --psm 7"
-    resize_scale: float = 1.5
+    lang: str = "jpn+eng"
+    config: str = "--oem 1 --psm 6 -c load_system_dawg=0 -c load_freq_dawg=0"
+    single_line_config: str = "--oem 1 --psm 7 -c load_system_dawg=0 -c load_freq_dawg=0"
+    value_config: str = "--oem 1 --psm 10 -c tessedit_char_whitelist=0123456789"
+    resize_scale: float = 2.0
     timeout_sec: float = 12.0
 
     def _load_dependencies(self):
@@ -29,36 +42,172 @@ class TesseractOcrEngine:
         logger.debug("OCR dependencies loaded (tesseract_cmd=%s)", tesseract_cmd)
         return cv2, pytesseract
 
-    def preprocess(self, image):
-        logger.debug("OCR preprocess start (shape=%s)", getattr(image, "shape", None))
-        cv2, _ = self._load_dependencies()
+    def _prepare_preprocess_variants(self, image: Any, *, cv2: Any) -> list[tuple[str, Any]]:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        denoised = cv2.medianBlur(binary, 3)
-
         if self.resize_scale and self.resize_scale != 1.0:
-            denoised = cv2.resize(denoised, None, fx=self.resize_scale, fy=self.resize_scale, interpolation=cv2.INTER_CUBIC)
-        logger.debug("OCR preprocess done (shape=%s)", getattr(denoised, "shape", None))
-        return denoised
+            gray = cv2.resize(gray, None, fx=self.resize_scale, fy=self.resize_scale, interpolation=cv2.INTER_CUBIC)
 
-    def extract_text(self, image, *, config_override: str | None = None) -> str:
-        logger.info("OCR extract start")
-        _, pytesseract = self._load_dependencies()
-        preprocessed = self.preprocess(image)
-        config = config_override or self.config
+        blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+        _, otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        adaptive = cv2.adaptiveThreshold(
+            gray,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            31,
+            4,
+        )
+        _, otsu_inv = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+        variants = [
+            ("otsu", otsu),
+            ("adaptive", adaptive),
+            ("otsu_inv", otsu_inv),
+        ]
+        logger.debug("Prepared preprocess variants (count=%s)", len(variants))
+        return variants
+
+    def _compute_confidence(self, pytesseract: Any, preprocessed: Any, *, lang: str, config: str) -> float:
         try:
-            text = pytesseract.image_to_string(
+            data = pytesseract.image_to_data(
                 preprocessed,
-                lang=self.lang,
+                lang=lang,
                 config=config,
                 timeout=self.timeout_sec,
+                output_type=pytesseract.Output.DICT,
             )
-        except RuntimeError as exc:
+        except RuntimeError:
+            logger.warning("image_to_data failed while computing confidence")
+            return 0.0
+
+        conf_values: list[float] = []
+        for raw_conf in data.get("conf", []):
+            try:
+                parsed = float(raw_conf)
+            except (TypeError, ValueError):
+                continue
+            if parsed >= 0:
+                conf_values.append(parsed)
+        if not conf_values:
+            return 0.0
+        return sum(conf_values) / len(conf_values)
+
+    def _extract_with_variant(
+        self,
+        preprocessed: Any,
+        *,
+        variant_name: str,
+        lang: str,
+        config: str,
+        pytesseract: Any,
+    ) -> _OcrAttempt:
+        text = pytesseract.image_to_string(
+            preprocessed,
+            lang=lang,
+            config=config,
+            timeout=self.timeout_sec,
+        ).strip()
+        confidence = self._compute_confidence(pytesseract, preprocessed, lang=lang, config=config)
+        compact_len = len(re.sub(r"\s+", "", text))
+        score = (2.0 if text else 0.0) + (confidence / 100.0) + (min(compact_len, 32) / 32.0)
+        return _OcrAttempt(text=text, confidence=confidence, score=score, variant_name=variant_name)
+
+    def extract_text(
+        self,
+        image,
+        *,
+        config_override: str | None = None,
+        lang_override: str | None = None,
+    ) -> str:
+        logger.info("OCR extract start")
+        cv2, pytesseract = self._load_dependencies()
+        config = config_override or self.config
+        lang = lang_override or self.lang
+
+        attempts: list[_OcrAttempt] = []
+        errors: list[Exception] = []
+        for variant_name, preprocessed in self._prepare_preprocess_variants(image, cv2=cv2):
+            try:
+                attempt = self._extract_with_variant(
+                    preprocessed,
+                    variant_name=variant_name,
+                    lang=lang,
+                    config=config,
+                    pytesseract=pytesseract,
+                )
+            except RuntimeError as exc:
+                errors.append(exc)
+                logger.warning("OCR attempt failed (variant=%s)", variant_name)
+                continue
+            attempts.append(attempt)
+
+        if not attempts:
             logger.exception("OCR extract timeout or runtime error")
-            raise RuntimeError(f"Tesseract OCR timeout ({self.timeout_sec}秒)") from exc
-        result = text.strip()
-        logger.info("OCR extract done (chars=%s)", len(result))
-        return result
+            if errors:
+                raise RuntimeError(f"Tesseract OCR timeout ({self.timeout_sec}秒)") from errors[0]
+            raise RuntimeError(f"Tesseract OCR timeout ({self.timeout_sec}秒)")
+
+        best = max(
+            attempts,
+            key=lambda attempt: (
+                1 if attempt.text else 0,
+                attempt.score,
+                attempt.confidence,
+                len(attempt.text),
+            ),
+        )
+        logger.info(
+            "OCR extract done (chars=%s, variant=%s, conf=%.1f)",
+            len(best.text),
+            best.variant_name,
+            best.confidence,
+        )
+        return best.text
+
+    def _sanitize_effect_label(self, raw_text: str) -> str:
+        line = next((chunk.strip() for chunk in raw_text.splitlines() if chunk.strip()), raw_text.strip())
+        if not line:
+            return ""
+        line = line.translate(str.maketrans({"･": "・", "·": "・", "＋": "+", "　": " "}))
+        line = re.sub(r"[+＋*＊xX×<＜>＞=~〜]?\s*[0-9０-９]+\s*$", "", line)
+        line = re.sub(r"[+＋*＊xX×<＜>＞=~〜?？!！]+$", "", line)
+        return line.strip()
+
+    def _parse_value_text(self, raw_text: str) -> int | None:
+        normalized = raw_text.translate(FULLWIDTH_DIGITS)
+        match = VALUE_PATTERN.search(normalized)
+        if not match:
+            return None
+        try:
+            parsed = int(match.group(1))
+        except ValueError:
+            return None
+        return parsed
+
+    def extract_effect_line(self, image) -> str:
+        label_text = self.extract_text(image, config_override=self.single_line_config)
+        value_text = self.extract_text(image, config_override=self.value_config, lang_override="eng")
+        label = self._sanitize_effect_label(label_text)
+        parsed_value = self._parse_value_text(value_text)
+        if parsed_value is None:
+            parsed_value = self._parse_value_text(label_text)
+
+        if label and parsed_value is not None:
+            combined = f"{label}+{parsed_value}"
+        elif label:
+            combined = label
+        elif parsed_value is not None:
+            combined = str(parsed_value)
+        else:
+            combined = ""
+
+        logger.info(
+            "Effect OCR done (label=%s, value_text=%s, combined=%s)",
+            label or "<empty>",
+            value_text or "<empty>",
+            combined or "<empty>",
+        )
+        return combined
 
     def extract_effect_texts(self, image, *, max_effects: int = 3) -> list[str]:
         logger.info("Extract effect texts start (max_effects=%s)", max_effects)
@@ -78,14 +227,12 @@ class TesseractOcrEngine:
                 if len(lines) >= max_effects:
                     return
 
-        # 1) Whole-area OCR first.
         whole_text = self.extract_text(image)
         add_line(whole_text)
         if len(lines) >= max_effects:
             logger.info("Extract effect texts done via whole-area OCR only (count=%s)", len(lines))
             return lines[:max_effects]
 
-        # 2) Split into N horizontal bands and OCR each band as single-line.
         image_height = int(getattr(image, "shape", [0])[0]) if getattr(image, "shape", None) is not None else 0
         if image_height <= 0:
             logger.warning("Image height unavailable for multi-band OCR")

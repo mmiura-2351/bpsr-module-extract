@@ -47,3 +47,30 @@ def test_extract_effect_texts_fills_missing_lines_with_band_ocr(monkeypatch) -> 
 
     assert lines == ["集中・攻撃速度+4", "集中・詠唱+9", "集中・幸運+5"]
 
+
+def test_extract_effect_line_runs_label_and_value_ocr(monkeypatch) -> None:
+    engine = TesseractOcrEngine()
+
+    def fake_extract_text(_image, *, config_override=None, lang_override=None):  # noqa: ANN001
+        if config_override == engine.value_config:
+            assert lang_override == "eng"
+            return "9"
+        assert config_override == engine.single_line_config
+        return "集中・詠唱+?"
+
+    monkeypatch.setattr(engine, "extract_text", fake_extract_text)
+    line = engine.extract_effect_line(_FakeImage())
+    assert line == "集中・詠唱+9"
+
+
+def test_extract_effect_line_falls_back_to_label_value_when_value_ocr_empty(monkeypatch) -> None:
+    engine = TesseractOcrEngine()
+
+    def fake_extract_text(_image, *, config_override=None, lang_override=None):  # noqa: ANN001
+        if config_override == engine.value_config:
+            return ""
+        return "集中・会心+6"
+
+    monkeypatch.setattr(engine, "extract_text", fake_extract_text)
+    line = engine.extract_effect_line(_FakeImage())
+    assert line == "集中・会心+6"
