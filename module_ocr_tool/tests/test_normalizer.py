@@ -31,6 +31,21 @@ def test_parse_missing_value() -> None:
     assert parsed[0].parsed_value is None
 
 
+def test_parse_out_of_range_value_is_treated_as_missing() -> None:
+    parsed = parse_ocr_text("集中・詠唱+75")
+    assert len(parsed) == 1
+    assert parsed[0].resolved_effect_id == "cast_focus"
+    assert parsed[0].parsed_value is None
+
+
+def test_parse_numeric_only_line_does_not_resolve_effect() -> None:
+    parsed = parse_ocr_text("8")
+    assert len(parsed) == 1
+    assert parsed[0].resolved_effect_id is None
+    assert parsed[0].parsed_value == 8
+    assert parsed[0].jp_label_candidates == []
+
+
 def test_parse_limit_to_three_effects() -> None:
     text = "\n".join(
         [

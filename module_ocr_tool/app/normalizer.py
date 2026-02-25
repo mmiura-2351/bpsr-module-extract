@@ -24,6 +24,13 @@ LABEL_VARIANTS = str.maketrans(
         "　": " ",
     }
 )
+MIN_EFFECT_VALUE = 1
+MAX_EFFECT_VALUE = 10
+VALID_EFFECT_VALUE_PAIRS: set[tuple[str, int]] = {
+    (effect_id, value)
+    for effect_id in JP_TO_EFFECT_ID.values()
+    for value in range(MIN_EFFECT_VALUE, MAX_EFFECT_VALUE + 1)
+}
 
 
 @dataclass
@@ -52,6 +59,8 @@ def _extract_value_and_label(raw_line: str) -> tuple[int | None, str]:
     try:
         parsed_value = int(value_text.replace("+", ""))
     except ValueError:
+        parsed_value = None
+    if parsed_value is not None and not (MIN_EFFECT_VALUE <= parsed_value <= MAX_EFFECT_VALUE):
         parsed_value = None
 
     left = line[: match.start()]
@@ -93,12 +102,47 @@ def _build_candidates(
     return [normalized_to_label[key] for key in matched_keys]
 
 
+def _label_similarity_score(normalized_label: str, jp_label: str) -> float:
+    normalized_candidate = normalize_label(jp_label)
+    if not normalized_label or not normalized_candidate:
+        return 0.0
+    if _rapidfuzz_fuzz is not None:
+        try:
+            return float(_rapidfuzz_fuzz.WRatio(normalized_label, normalized_candidate)) / 100.0
+        except Exception:
+            pass
+    return difflib.SequenceMatcher(None, normalized_label, normalized_candidate).ratio()
+
+
+def _resolve_effect_id_from_candidates(
+    normalized_label: str,
+    candidates: list[str],
+    *,
+    resolve_cutoff: float,
+    ambiguity_margin: float,
+) -> str | None:
+    if not candidates:
+        return None
+
+    top_score = _label_similarity_score(normalized_label, candidates[0])
+    if top_score < resolve_cutoff:
+        return None
+
+    second_score = _label_similarity_score(normalized_label, candidates[1]) if len(candidates) >= 2 else 0.0
+    if second_score > 0.0 and (top_score - second_score) < ambiguity_margin:
+        return None
+
+    return JP_TO_EFFECT_ID[candidates[0]]
+
+
 def parse_ocr_text(
     ocr_text: str,
     *,
     max_effects: int = 3,
     candidate_limit: int = 4,
     cutoff: float = 0.50,
+    resolve_cutoff: float = 0.68,
+    ambiguity_margin: float = 0.08,
 ) -> list[ParsedEffectCandidate]:
     normalized_to_label = _build_normalized_label_index()
     parsed: list[ParsedEffectCandidate] = []
@@ -111,11 +155,14 @@ def parse_ocr_text(
         exact_label = normalized_to_label.get(normalized_label)
 
         if exact_label is not None:
+            resolved_effect_id = JP_TO_EFFECT_ID[exact_label]
+            if parsed_value is not None and (resolved_effect_id, parsed_value) not in VALID_EFFECT_VALUE_PAIRS:
+                parsed_value = None
             parsed.append(
                 ParsedEffectCandidate(
                     raw_line=raw_line,
                     parsed_value=parsed_value,
-                    resolved_effect_id=JP_TO_EFFECT_ID[exact_label],
+                    resolved_effect_id=resolved_effect_id,
                     jp_label_candidates=[exact_label],
                 )
             )
@@ -127,7 +174,16 @@ def parse_ocr_text(
             candidate_limit=candidate_limit,
             cutoff=cutoff,
         )
-        resolved_effect_id = JP_TO_EFFECT_ID[candidates[0]] if candidates else None
+        resolved_effect_id = _resolve_effect_id_from_candidates(
+            normalized_label,
+            candidates,
+            resolve_cutoff=resolve_cutoff,
+            ambiguity_margin=ambiguity_margin,
+        )
+
+        if resolved_effect_id is not None and parsed_value is not None:
+            if (resolved_effect_id, parsed_value) not in VALID_EFFECT_VALUE_PAIRS:
+                parsed_value = None
         parsed.append(
             ParsedEffectCandidate(
                 raw_line=raw_line,

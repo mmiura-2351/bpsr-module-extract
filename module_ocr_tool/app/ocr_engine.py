@@ -10,7 +10,7 @@ from module_ocr_tool.app.tesseract_runtime import configure_pytesseract
 
 logger = logging.getLogger(__name__)
 
-VALUE_PATTERN = re.compile(r"(\d{1,2})")
+VALUE_PATTERN = re.compile(r"\d+")
 FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
 
 
@@ -211,14 +211,25 @@ class TesseractOcrEngine:
 
     def _parse_value_text(self, raw_text: str) -> int | None:
         normalized = raw_text.translate(FULLWIDTH_DIGITS)
-        match = VALUE_PATTERN.search(normalized)
-        if not match:
+        tokens = VALUE_PATTERN.findall(normalized)
+        if not tokens:
             return None
-        try:
-            parsed = int(match.group(1))
-        except ValueError:
+
+        candidates: list[int] = []
+        for token in tokens:
+            if len(token) == 1:
+                candidates.append(int(token))
+                continue
+            if token == "10":
+                candidates.append(10)
+                continue
+            if len(token) == 2 and token.startswith("0") and token[1] != "0":
+                candidates.append(int(token[1]))
+
+        valid = sorted({value for value in candidates if 1 <= value <= 10})
+        if len(valid) != 1:
             return None
-        return parsed
+        return valid[0]
 
     def extract_effect_line(self, image) -> str:
         label_text = self.extract_text(
@@ -242,14 +253,12 @@ class TesseractOcrEngine:
             )
             parsed_value = self._parse_value_text(value_text)
 
-        if label and parsed_value is not None:
-            combined = f"{label}+{parsed_value}"
-        elif label:
-            combined = label
-        elif parsed_value is not None:
-            combined = str(parsed_value)
-        else:
+        if not label:
             combined = ""
+        elif parsed_value is not None:
+            combined = f"{label}+{parsed_value}"
+        else:
+            combined = label
 
         logger.info(
             "Effect OCR done (label=%s, value_text=%s, combined=%s)",

@@ -95,6 +95,32 @@ def test_extract_effect_line_runs_value_ocr_when_label_value_is_out_of_range(mon
     assert call_count["value"] == 1
 
 
+def test_extract_effect_line_drops_ambiguous_value_ocr_digits(monkeypatch) -> None:
+    engine = TesseractOcrEngine()
+
+    def fake_extract_text(_image, *, config_override=None, lang_override=None, **_kwargs):  # noqa: ANN001
+        if config_override == engine.value_config:
+            return "0848"
+        return "集中・詠唱+?"
+
+    monkeypatch.setattr(engine, "extract_text", fake_extract_text)
+    line = engine.extract_effect_line(_FakeImage())
+    assert line == "集中・詠唱"
+
+
+def test_extract_effect_line_returns_empty_when_label_missing(monkeypatch) -> None:
+    engine = TesseractOcrEngine()
+
+    def fake_extract_text(_image, *, config_override=None, lang_override=None, **_kwargs):  # noqa: ANN001
+        if config_override == engine.value_config:
+            return "8"
+        return "   "
+
+    monkeypatch.setattr(engine, "extract_text", fake_extract_text)
+    line = engine.extract_effect_line(_FakeImage())
+    assert line == ""
+
+
 def test_extract_effect_line_falls_back_to_label_value_when_value_ocr_empty(monkeypatch) -> None:
     engine = TesseractOcrEngine()
 
