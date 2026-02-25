@@ -19,6 +19,12 @@
 3. `Run workflow` を実行
 4. 完了後、Artifacts から `ModuleOcrTool-windows` を取得
 
+Artifacts の zip には以下が含まれる:
+
+- `ModuleOcrTool.exe`
+- `README.txt`（同梱向けの簡易使用手順）
+- `ocr_range_guide.png`（OCR範囲設定の使用例画像）
+
 補足:
 
 - workflow 内で `choco install tesseract` を実行
@@ -69,7 +75,15 @@ uv run \
 
 ## 4. 生成物
 
+ローカルビルド時:
+
 - `dist/ModuleOcrTool.exe`
+
+GitHub Actions artifacts:
+
+- `ModuleOcrTool.exe`
+- `README.txt`
+- `ocr_range_guide.png`
 
 `onefile` のため、実行時に展開される一時ディレクトリから同梱 Tesseract を参照する。
 

@@ -85,9 +85,20 @@ jobs:
         shell: pwsh
         run: ./scripts/build_windows_onefile.ps1 -Clean
 
+      - name: Prepare artifact package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $packageDir = "dist/package"
+          New-Item -ItemType Directory -Force $packageDir | Out-Null
+
+          Copy-Item "dist/ModuleOcrTool.exe" (Join-Path $packageDir "ModuleOcrTool.exe") -Force
+          Copy-Item "README.txt" (Join-Path $packageDir "README.txt") -Force
+          Copy-Item "docs/assets/ocr_range_guide.png" (Join-Path $packageDir "ocr_range_guide.png") -Force
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ModuleOcrTool-windows
-          path: dist/ModuleOcrTool.exe
+          path: dist/package/**
           if-no-files-found: error
