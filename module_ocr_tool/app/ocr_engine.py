@@ -310,3 +310,14 @@ class TesseractOcrEngine:
 
         logger.info("Extract effect texts done (count=%s, lines=%s)", len(lines), lines[:max_effects])
         return lines[:max_effects]
+
+    def extract_category_line(self, image) -> str:
+        text = self.extract_text(
+            image,
+            config_override=self.single_line_config,
+            max_variants=self.label_variant_limit,
+            use_confidence=False,
+        )
+        line = next((chunk.strip() for chunk in text.splitlines() if chunk.strip()), "")
+        logger.info("Category OCR done (text=%s)", line or "<empty>")
+        return line

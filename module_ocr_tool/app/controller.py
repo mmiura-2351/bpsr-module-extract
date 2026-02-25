@@ -17,7 +17,7 @@ from module_ocr_tool.app.exporter import (
     write_export_json,
 )
 from module_ocr_tool.app.models import EffectEntry, ModuleRecord
-from module_ocr_tool.app.normalizer import ParsedEffectCandidate, parse_ocr_text
+from module_ocr_tool.app.normalizer import ParsedCategoryCandidate, ParsedEffectCandidate, parse_category_text, parse_ocr_text
 from module_ocr_tool.app.ocr_engine import TesseractOcrEngine
 from module_ocr_tool.app.state import AppState
 from module_ocr_tool.app.ui.main_window import MainWindow
@@ -37,7 +37,7 @@ class AppController:
         self.ocr_engine = TesseractOcrEngine()
 
         loaded_regions = list(self._config.effect_regions)
-        self._effect_regions: list[CaptureRegion | None] = (loaded_regions + [None, None, None])[:3]
+        self._effect_regions: list[CaptureRegion | None] = (loaded_regions + [None, None, None, None])[:4]
         self._processing_token = 0
         self._processing_debug_flags: dict[int, bool] = {}
 
@@ -105,13 +105,15 @@ class AppController:
             logger.info("Status: %s -> %s (%s)", previous, status, reason)
 
     def _format_region_summary(self) -> str:
+        labels = ["効果1", "効果2", "効果3", "カテゴリ"]
         segments: list[str] = []
-        for index, region in enumerate(self._effect_regions, start=1):
+        for index, region in enumerate(self._effect_regions):
+            label = labels[index] if index < len(labels) else f"範囲{index + 1}"
             if region is None:
-                segments.append(f"範囲{index}:未設定")
+                segments.append(f"{label}:未設定")
             else:
                 segments.append(
-                    f"範囲{index}:({region['left']},{region['top']},{region['width']},{region['height']})"
+                    f"{label}:({region['left']},{region['top']},{region['width']},{region['height']})"
                 )
         return " / ".join(segments)
 
@@ -305,12 +307,15 @@ class AppController:
 
     def _compute_processing_timeout_ms(self) -> int:
         configured_regions = [region for region in self._effect_regions[:3] if region is not None]
+        category_region = self._effect_regions[3] if len(self._effect_regions) >= 4 else None
         if configured_regions:
             per_region_sec = max(self.ocr_engine.timeout_sec, 8.0)
             # 初回OCR + アンカーY探索フォールバック分の余裕を見込む。
             estimated_sec = 8.0 + (per_region_sec * len(configured_regions))
         else:
             estimated_sec = max((self.ocr_engine.timeout_sec * 2.0) + 6.0, 20.0)
+        if category_region is not None:
+            estimated_sec += max(self.ocr_engine.timeout_sec, 8.0)
 
         timeout_ms = int(estimated_sec * 1000)
         timeout_ms = max(timeout_ms, 15000)
@@ -368,12 +373,14 @@ class AppController:
         lines: list[str],
         raw_text: str,
         anchor_shift_y: int = 0,
+        category_line: str = "",
     ) -> None:
         summary_path = debug_dir / "ocr_debug_summary.txt"
         content = [
             f"token={token}",
             f"line_count={len(lines)}",
             f"anchor_shift_y={anchor_shift_y}",
+            f"category_line={category_line}",
             "",
             "[lines]",
         ]
@@ -557,7 +564,12 @@ class AppController:
             logger.info("Capture thread start (token=%s)", token)
 
             lines: list[str] = []
-            configured = [(index, region) for index, region in enumerate(self._effect_regions, start=1) if region is not None]
+            category_line = ""
+            configured = [
+                (index, region)
+                for index, region in enumerate(self._effect_regions[:3], start=1)
+                if region is not None
+            ]
             selected_shift_y = 0
 
             if configured:
@@ -610,7 +622,22 @@ class AppController:
                     )
                 logger.info("Whole-area OCR done (lines=%s)", len(lines))
 
+            if len(self._effect_regions) >= 4 and self._effect_regions[3] is not None:
+                category_region = self._effect_regions[3]
+                if category_region is not None:
+                    category_image = self.capture.capture(region_override=category_region)
+                    category_line = self.ocr_engine.extract_category_line(category_image)
+                    if debug_dir is not None:
+                        self._save_debug_slot_output(
+                            debug_dir,
+                            slot_index=4,
+                            image=category_image,
+                            line=category_line,
+                        )
+                    logger.info("Category OCR done (line=%s)", category_line or "<empty>")
+
             raw_text = "\n".join(lines)
+            category_candidate = parse_category_text(category_line)
             if debug_dir is not None:
                 self._write_debug_summary(
                     debug_dir,
@@ -618,6 +645,7 @@ class AppController:
                     lines=lines,
                     raw_text=raw_text,
                     anchor_shift_y=selected_shift_y,
+                    category_line=category_line,
                 )
             candidates = parse_ocr_text(raw_text, max_effects=3)
             elapsed = time.monotonic() - started
@@ -629,7 +657,16 @@ class AppController:
                 len(lines),
                 len(candidates),
             )
-            self.root.after(0, lambda: self._handle_processing_success(token, candidates, raw_text, debug_dir))
+            self.root.after(
+                0,
+                lambda: self._handle_processing_success(
+                    token,
+                    candidates,
+                    category_candidate,
+                    raw_text,
+                    debug_dir,
+                ),
+            )
         except Exception as exc:
             elapsed = time.monotonic() - started
             logger.exception("Processing failed (token=%s, elapsed_sec=%.3f)", token, elapsed)
@@ -647,6 +684,7 @@ class AppController:
         self,
         token: int,
         candidates: list[ParsedEffectCandidate],
+        category_candidate: ParsedCategoryCandidate,
         raw_text: str,
         debug_dir: Path | None,
     ) -> None:
@@ -657,7 +695,7 @@ class AppController:
         if debug_enabled and debug_dir is not None:
             logger.info("Debug OCR output saved: %s", debug_dir)
             self.main_window.show_info(f"デバッグ出力を保存しました:\n{debug_dir}")
-        self._show_result_dialog(candidates, raw_text)
+        self._show_result_dialog(candidates, category_candidate, raw_text)
 
     def _handle_processing_error(self, token: int, message: str) -> None:
         if token != self._processing_token or self.state.status != "processing":
@@ -666,13 +704,19 @@ class AppController:
         self._processing_debug_flags.pop(token, None)
         self._handle_error(message)
 
-    def _show_result_dialog(self, candidates: list[ParsedEffectCandidate], raw_text: str) -> None:
+    def _show_result_dialog(
+        self,
+        candidates: list[ParsedEffectCandidate],
+        category_candidate: ParsedCategoryCandidate,
+        raw_text: str,
+    ) -> None:
         self._set_status("editing_result", reason="processing success")
         self.state.last_raw_ocr_text = raw_text
         self._update_view()
         ResultDialog(
             self.root,
             candidates,
+            category_candidate,
             on_confirm=self.confirm_module,
             on_cancel=self._cancel_result_edit,
         )
@@ -681,8 +725,8 @@ class AppController:
         self._set_status("waiting_capture", reason="result edit canceled")
         self._update_view()
 
-    def confirm_module(self, effects: list[EffectEntry]) -> None:
-        module = ModuleRecord(module_category="general", effects=effects[:3])
+    def confirm_module(self, module_category: str, effects: list[EffectEntry]) -> None:
+        module = ModuleRecord(module_category=module_category, effects=effects[:3])
         if is_duplicate_module(module, self.state.modules):
             logger.info("Duplicate module detected. Skip append.")
             self.main_window.show_info("既存モジュールと重複しているため追加をスキップしました。")

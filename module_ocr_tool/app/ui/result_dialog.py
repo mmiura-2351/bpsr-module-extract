@@ -5,9 +5,9 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable
 
-from module_ocr_tool.app.mappings import EFFECT_ID_TO_JP, JP_TO_EFFECT_ID
+from module_ocr_tool.app.mappings import CATEGORY_ID_TO_JP, CATEGORY_JP_TO_ID, EFFECT_ID_TO_JP, JP_TO_EFFECT_ID
 from module_ocr_tool.app.models import EffectEntry
-from module_ocr_tool.app.normalizer import ParsedEffectCandidate
+from module_ocr_tool.app.normalizer import ParsedCategoryCandidate, ParsedEffectCandidate
 from module_ocr_tool.app.validation import validate_effect_entries_for_module
 
 
@@ -19,13 +19,20 @@ class _RowModel:
     blank_value_var: tk.BooleanVar
 
 
+@dataclass
+class _CategoryModel:
+    jp_var: tk.StringVar
+    category_var: tk.StringVar
+
+
 class ResultDialog(tk.Toplevel):
     def __init__(
         self,
         master: tk.Misc,
         candidates: list[ParsedEffectCandidate],
+        category_candidate: ParsedCategoryCandidate,
         *,
-        on_confirm: Callable[[list[EffectEntry]], None],
+        on_confirm: Callable[[str, list[EffectEntry]], None],
         on_cancel: Callable[[], None],
     ) -> None:
         super().__init__(master)
@@ -37,29 +44,62 @@ class ResultDialog(tk.Toplevel):
         self._on_confirm_callback = on_confirm
         self._on_cancel_callback = on_cancel
         self._rows: list[_RowModel] = []
+        self._category: _CategoryModel | None = None
 
-        self._build(candidates)
+        self._build(candidates, category_candidate)
         self.protocol("WM_DELETE_WINDOW", self._cancel)
 
-    def _build(self, candidates: list[ParsedEffectCandidate]) -> None:
+    def _build(self, candidates: list[ParsedEffectCandidate], category_candidate: ParsedCategoryCandidate) -> None:
         frame = ttk.Frame(self, padding=12)
         frame.pack(fill="both", expand=True)
 
         ttk.Label(frame, text="OCR結果", font=("", 13, "bold")).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 10))
 
-        ttk.Label(frame, text="No").grid(row=1, column=0, padx=(0, 4))
-        ttk.Label(frame, text="日本語候補").grid(row=1, column=1, padx=(0, 4))
-        ttk.Label(frame, text="effect_id").grid(row=1, column=2, padx=(0, 4))
-        ttk.Label(frame, text="value").grid(row=1, column=3)
-        ttk.Label(frame, text="値空欄").grid(row=1, column=4)
+        self._create_category_inputs(frame, row=1, category_candidate=category_candidate)
+
+        ttk.Label(frame, text="No").grid(row=2, column=0, padx=(0, 4))
+        ttk.Label(frame, text="日本語候補").grid(row=2, column=1, padx=(0, 4))
+        ttk.Label(frame, text="effect_id").grid(row=2, column=2, padx=(0, 4))
+        ttk.Label(frame, text="value").grid(row=2, column=3)
+        ttk.Label(frame, text="値空欄").grid(row=2, column=4)
 
         prepared_rows = self._prepare_rows(candidates)
         for index, row_data in enumerate(prepared_rows):
-            self._create_row(frame, index + 2, index, row_data)
+            self._create_row(frame, index + 3, index, row_data)
 
-        button_row = len(prepared_rows) + 2
+        button_row = len(prepared_rows) + 3
         ttk.Button(frame, text="確定", command=self._confirm).grid(row=button_row, column=3, sticky="e", pady=(12, 0), padx=(0, 4))
         ttk.Button(frame, text="キャンセル", command=self._cancel).grid(row=button_row, column=4, sticky="e", pady=(12, 0))
+
+    def _create_category_inputs(
+        self,
+        frame: ttk.Frame,
+        *,
+        row: int,
+        category_candidate: ParsedCategoryCandidate,
+    ) -> None:
+        initial_category_id = category_candidate.resolved_category or ""
+        initial_jp = CATEGORY_ID_TO_JP.get(initial_category_id, "")
+        if not initial_jp and category_candidate.jp_label_candidates:
+            initial_jp = category_candidate.jp_label_candidates[0]
+            initial_category_id = CATEGORY_JP_TO_ID.get(initial_jp, "")
+
+        jp_candidates = list(dict.fromkeys(category_candidate.jp_label_candidates + list(CATEGORY_ID_TO_JP.values())))
+
+        ttk.Label(frame, text="カテゴリ").grid(row=row, column=0, sticky="w", padx=(0, 4), pady=(0, 6))
+        jp_var = tk.StringVar(value=initial_jp)
+        category_var = tk.StringVar(value=initial_category_id)
+
+        category_selector = ttk.Combobox(frame, textvariable=jp_var, values=jp_candidates, width=16)
+        category_selector.grid(row=row, column=1, sticky="w", padx=(0, 4), pady=(0, 6))
+
+        ttk.Entry(frame, textvariable=category_var, width=16).grid(row=row, column=2, sticky="w", padx=(0, 4), pady=(0, 6))
+
+        raw_text = category_candidate.raw_text.strip() or "<empty>"
+        ttk.Label(frame, text=f"OCR:{raw_text}", width=34).grid(row=row, column=3, columnspan=2, sticky="w", pady=(0, 6))
+
+        jp_var.trace_add("write", lambda *_: self._sync_category_id(jp_var, category_var))
+        self._category = _CategoryModel(jp_var=jp_var, category_var=category_var)
 
     def _prepare_rows(self, candidates: list[ParsedEffectCandidate]) -> list[dict[str, str | list[str]]]:
         rows: list[dict[str, str | list[str]]] = []
@@ -134,7 +174,23 @@ class ResultDialog(tk.Toplevel):
         if effect_id:
             effect_var.set(effect_id)
 
+    def _sync_category_id(self, jp_var: tk.StringVar, category_var: tk.StringVar) -> None:
+        jp_label = jp_var.get().strip()
+        category_id = CATEGORY_JP_TO_ID.get(jp_label)
+        if category_id:
+            category_var.set(category_id)
+
     def _confirm(self) -> None:
+        if self._category is None:
+            messagebox.showerror("入力エラー", "カテゴリ入力の初期化に失敗しました。")
+            return
+
+        module_category = self._category.category_var.get().strip()
+        if module_category not in CATEGORY_ID_TO_JP:
+            module_category = "general"
+            self._category.category_var.set(module_category)
+            self._category.jp_var.set(CATEGORY_ID_TO_JP[module_category])
+
         effects: list[EffectEntry] = []
         for row in self._rows:
             jp_label = row.jp_var.get().strip()
@@ -172,7 +228,7 @@ class ResultDialog(tk.Toplevel):
             messagebox.showerror("入力エラー", validation_error)
             return
 
-        self._on_confirm_callback(effects)
+        self._on_confirm_callback(module_category, effects)
         self.destroy()
 
     def _cancel(self) -> None:

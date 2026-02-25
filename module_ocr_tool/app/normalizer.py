@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import difflib
 import re
 
-from module_ocr_tool.app.mappings import JP_TO_EFFECT_ID
+from module_ocr_tool.app.mappings import CATEGORY_ID_TO_JP, CATEGORY_JP_TO_ID, JP_TO_EFFECT_ID
 from module_ocr_tool.app.models import EffectEntry
 
 try:
@@ -24,6 +24,14 @@ LABEL_VARIANTS = str.maketrans(
         "　": " ",
     }
 )
+CATEGORY_VARIANTS = str.maketrans(
+    {
+        "　": " ",
+        "｜": "|",
+        "l": "|",
+        "I": "|",
+    }
+)
 MIN_EFFECT_VALUE = 1
 MAX_EFFECT_VALUE = 10
 VALID_EFFECT_VALUE_PAIRS: set[tuple[str, int]] = {
@@ -41,11 +49,28 @@ class ParsedEffectCandidate:
     jp_label_candidates: list[str]
 
 
+@dataclass
+class ParsedCategoryCandidate:
+    raw_text: str
+    resolved_category: str | None
+    jp_label_candidates: list[str]
+
+
 def normalize_label(label: str) -> str:
     sanitized = label.translate(LABEL_VARIANTS)
     sanitized = re.sub(r"[0-9０-９]", "", sanitized)
     sanitized = re.sub(r"[+＋＊*xX×<＜>＞=~〜]+", "", sanitized)
     sanitized = re.sub(r"\s+", "", sanitized)
+    return sanitized.strip(":：-")
+
+
+def normalize_category_label(label: str) -> str:
+    sanitized = label.translate(CATEGORY_VARIANTS)
+    sanitized = sanitized.replace("モジュール", "")
+    sanitized = sanitized.replace("型", "")
+    sanitized = sanitized.replace("|", "")
+    sanitized = re.sub(r"\s+", "", sanitized)
+    sanitized = re.sub(r"[^ぁ-んァ-ン一-龥]", "", sanitized)
     return sanitized.strip(":：-")
 
 
@@ -71,6 +96,10 @@ def _extract_value_and_label(raw_line: str) -> tuple[int | None, str]:
 
 def _build_normalized_label_index() -> dict[str, str]:
     return {normalize_label(jp_label): jp_label for jp_label in JP_TO_EFFECT_ID}
+
+
+def _build_normalized_category_alias_index() -> dict[str, str]:
+    return {normalize_category_label(jp_label): jp_label for jp_label in CATEGORY_JP_TO_ID}
 
 
 def _build_candidates(
@@ -194,6 +223,85 @@ def parse_ocr_text(
         )
 
     return parsed
+
+
+def parse_category_text(
+    raw_text: str,
+    *,
+    candidate_limit: int = 3,
+    cutoff: float = 0.40,
+    resolve_cutoff: float = 0.62,
+    ambiguity_margin: float = 0.08,
+) -> ParsedCategoryCandidate:
+    normalized_to_alias = _build_normalized_category_alias_index()
+    normalized_aliases = list(normalized_to_alias.keys())
+    raw_lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if not raw_lines and raw_text.strip():
+        raw_lines = [raw_text.strip()]
+
+    normalized_samples = [normalize_category_label(line) for line in raw_lines if normalize_category_label(line)]
+    if not normalized_samples and raw_text.strip():
+        fallback = normalize_category_label(raw_text)
+        if fallback:
+            normalized_samples = [fallback]
+
+    for sample in normalized_samples:
+        for normalized_alias, jp_alias in normalized_to_alias.items():
+            if normalized_alias and normalized_alias in sample:
+                category_id = CATEGORY_JP_TO_ID[jp_alias]
+                return ParsedCategoryCandidate(
+                    raw_text=raw_text,
+                    resolved_category=category_id,
+                    jp_label_candidates=[CATEGORY_ID_TO_JP[category_id]],
+                )
+
+    if not normalized_samples:
+        return ParsedCategoryCandidate(
+            raw_text=raw_text,
+            resolved_category="general",
+            jp_label_candidates=list(CATEGORY_ID_TO_JP.values()),
+        )
+
+    best_sample = max(normalized_samples, key=len)
+    if _rapidfuzz_process is not None and _rapidfuzz_fuzz is not None:
+        matched = _rapidfuzz_process.extract(
+            best_sample,
+            normalized_aliases,
+            scorer=_rapidfuzz_fuzz.WRatio,
+            limit=max(candidate_limit, 1),
+            score_cutoff=int(cutoff * 100),
+        )
+        matched_aliases = [normalized_to_alias[str(key)] for key, _score, _idx in matched]
+    else:
+        close_keys = difflib.get_close_matches(
+            best_sample,
+            normalized_aliases,
+            n=max(candidate_limit, 1),
+            cutoff=cutoff,
+        )
+        matched_aliases = [normalized_to_alias[key] for key in close_keys]
+
+    category_candidates: list[str] = []
+    for alias in matched_aliases:
+        category_id = CATEGORY_JP_TO_ID[alias]
+        jp_label = CATEGORY_ID_TO_JP[category_id]
+        if jp_label not in category_candidates:
+            category_candidates.append(jp_label)
+
+    if not category_candidates:
+        category_candidates = list(CATEGORY_ID_TO_JP.values())
+
+    resolved_category: str | None = "general"
+    top_score = _label_similarity_score(best_sample, category_candidates[0])
+    second_score = _label_similarity_score(best_sample, category_candidates[1]) if len(category_candidates) >= 2 else 0.0
+    if top_score >= resolve_cutoff and ((top_score - second_score) >= ambiguity_margin or second_score == 0.0):
+        resolved_category = CATEGORY_JP_TO_ID[category_candidates[0]]
+
+    return ParsedCategoryCandidate(
+        raw_text=raw_text,
+        resolved_category=resolved_category,
+        jp_label_candidates=category_candidates,
+    )
 
 
 def build_effect_entries(candidates: list[ParsedEffectCandidate]) -> list[EffectEntry]:

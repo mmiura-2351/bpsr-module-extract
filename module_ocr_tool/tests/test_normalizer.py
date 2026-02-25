@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from module_ocr_tool.app.normalizer import parse_ocr_text
+from module_ocr_tool.app.normalizer import parse_category_text, parse_ocr_text
 
 
 def test_parse_normal_line() -> None:
@@ -57,3 +57,24 @@ def test_parse_limit_to_three_effects() -> None:
     )
     parsed = parse_ocr_text(text)
     assert len(parsed) == 3
+
+
+def test_parse_category_text_attack() -> None:
+    parsed = parse_category_text("攻撃型モジュール")
+    assert parsed.resolved_category == "attack"
+
+
+def test_parse_category_text_survival_alias_maps_to_defense() -> None:
+    parsed = parse_category_text("生存型モジュール |")
+    assert parsed.resolved_category == "defense"
+
+
+def test_parse_category_text_empty_falls_back_to_general() -> None:
+    parsed = parse_category_text("")
+    assert parsed.resolved_category == "general"
+    assert "汎用" in parsed.jp_label_candidates
+
+
+def test_parse_category_text_unknown_falls_back_to_general() -> None:
+    parsed = parse_category_text("不明カテゴリ")
+    assert parsed.resolved_category == "general"

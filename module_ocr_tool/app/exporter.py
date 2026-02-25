@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
+from module_ocr_tool.app.mappings import CATEGORY_ID_TO_JP
 from module_ocr_tool.app.models import EffectEntry, ModuleRecord
 
 SCHEMA_NAME = "bpsr-module-calculator/modules"
@@ -23,7 +24,12 @@ def normalize_module_record(module: ModuleRecord) -> ModuleRecord:
         if not effect_id:
             continue
         normalized_effects.append(EffectEntry(effect_id=effect_id, value=int(effect.value)))
-    return ModuleRecord(module_category="general", effects=normalized_effects)
+
+    category = module.module_category.strip().lower() if isinstance(module.module_category, str) else "general"
+    allowed_categories = set(CATEGORY_ID_TO_JP.keys()) | {"general"}
+    if category not in allowed_categories:
+        category = "general"
+    return ModuleRecord(module_category=category, effects=normalized_effects)
 
 
 def module_key_from_record(module: ModuleRecord) -> ModuleKey:
@@ -133,4 +139,3 @@ def append_modules_to_existing_json(existing_path: str, new_modules: Sequence[Mo
     payload["modules"] = modules_obj
     write_export_json(payload, existing_path)
     return added, skipped, len(modules_obj)
-

@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AppConfig:
-    effect_regions: list[CaptureRegion | None] = field(default_factory=lambda: [None, None, None])
+    effect_regions: list[CaptureRegion | None] = field(default_factory=lambda: [None, None, None, None])
     last_export_path: str | None = None
     last_update_json_path: str | None = None
 
@@ -60,10 +60,11 @@ def _parse_region(value: Any) -> CaptureRegion | None:
 
 
 def _parse_effect_regions(value: Any) -> list[CaptureRegion | None]:
-    regions: list[CaptureRegion | None] = [None, None, None]
+    # 旧設定ファイル(3枠)との互換を維持しつつ、カテゴリ枠を追加した4枠に拡張する。
+    regions: list[CaptureRegion | None] = [None, None, None, None]
     if not isinstance(value, list):
         return regions
-    for index in range(min(3, len(value))):
+    for index in range(min(4, len(value))):
         regions[index] = _parse_region(value[index])
     return regions
 
@@ -104,4 +105,3 @@ def save_app_config(config: AppConfig, path: str | Path | None = None) -> Path:
         f.write("\n")
     logger.info("Config saved: %s", config_path)
     return config_path
-

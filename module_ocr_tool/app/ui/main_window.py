@@ -35,7 +35,9 @@ class MainWindow(ttk.Frame):
         self.module_count_var = tk.StringVar(value="0")
         self.hotkey_note_var = tk.StringVar(value="OCR実行ボタンを使用してください。")
         self.log_path_var = tk.StringVar(value="-")
-        self.region_summary_var = tk.StringVar(value="範囲1:未設定 / 範囲2:未設定 / 範囲3:未設定")
+        self.region_summary_var = tk.StringVar(
+            value="効果1:未設定 / 効果2:未設定 / 効果3:未設定 / カテゴリ:未設定"
+        )
         self.last_ocr_var = tk.StringVar(value="-")
 
         self.region_enabled_vars: list[tk.BooleanVar] = []
@@ -87,14 +89,15 @@ class MainWindow(ttk.Frame):
         ttk.Label(self, text="ログファイル:").grid(row=6, column=0, sticky="w")
         ttk.Label(self, textvariable=self.log_path_var, wraplength=520).grid(row=6, column=1, sticky="w")
 
-        region_frame = ttk.LabelFrame(self, text="OCR取得範囲 (3枠)")
+        region_frame = ttk.LabelFrame(self, text="OCR取得範囲 (効果3枠 + カテゴリ1枠)")
         region_frame.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
         headers = ["範囲", "left", "top", "width", "height", "選択", "適用"]
         for col, header in enumerate(headers):
             ttk.Label(region_frame, text=header).grid(row=0, column=col, sticky="w", padx=(0, 6))
 
-        for index in range(3):
+        region_labels = ["効果1", "効果2", "効果3", "カテゴリ"]
+        for index, label in enumerate(region_labels):
             enabled_var = tk.BooleanVar(value=False)
             left_var = tk.StringVar(value="0")
             top_var = tk.StringVar(value="0")
@@ -108,7 +111,7 @@ class MainWindow(ttk.Frame):
             self.region_height_vars.append(height_var)
 
             row = index + 1
-            ttk.Checkbutton(region_frame, text=f"範囲{index + 1}", variable=enabled_var).grid(
+            ttk.Checkbutton(region_frame, text=label, variable=enabled_var).grid(
                 row=row, column=0, sticky="w", padx=(0, 6), pady=2
             )
             ttk.Entry(region_frame, textvariable=left_var, width=8).grid(row=row, column=1, sticky="w", padx=(0, 6), pady=2)
@@ -123,7 +126,7 @@ class MainWindow(ttk.Frame):
             )
 
         ttk.Label(region_frame, textvariable=self.region_summary_var, wraplength=560).grid(
-            row=4, column=0, columnspan=7, sticky="w", pady=(6, 0)
+            row=len(region_labels) + 1, column=0, columnspan=7, sticky="w", pady=(6, 0)
         )
 
         ttk.Label(self, text="直近OCR生テキスト:").grid(row=8, column=0, sticky="nw", pady=(8, 0))

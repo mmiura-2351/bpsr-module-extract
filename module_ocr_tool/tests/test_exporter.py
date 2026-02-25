@@ -15,12 +15,12 @@ from module_ocr_tool.app.models import EffectEntry, ModuleRecord
 
 
 def test_build_export_payload_fixed_schema_and_version() -> None:
-    modules = [ModuleRecord(module_category="general", effects=[EffectEntry(effect_id="attack_spd", value=4)])]
+    modules = [ModuleRecord(module_category="attack", effects=[EffectEntry(effect_id="attack_spd", value=4)])]
     payload: dict[str, Any] = build_export_payload(modules)
 
     assert payload["schema"] == SCHEMA_NAME
     assert payload["version"] == SCHEMA_VERSION
-    assert payload["modules"][0]["module_category"] == "general"
+    assert payload["modules"][0]["module_category"] == "attack"
 
     exported_at = payload["exported_at"]
     assert isinstance(exported_at, str) and exported_at.endswith("Z")
