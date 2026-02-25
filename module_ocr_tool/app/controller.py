@@ -19,6 +19,7 @@ from module_ocr_tool.app.exporter import (
 )
 from module_ocr_tool.app.models import EffectEntry, ModuleRecord
 from module_ocr_tool.app.normalizer import (
+    infer_expected_effect_count,
     ParsedCategoryCandidate,
     ParsedEffectCandidate,
     normalize_module_name_text,
@@ -409,6 +410,7 @@ class AppController:
         token: int,
         lines: list[str],
         raw_text: str,
+        expected_effect_count: int = 3,
         anchor_shift_y: int = 0,
         category_line: str = "",
         module_name_line: str = "",
@@ -418,6 +420,7 @@ class AppController:
         content = [
             f"token={token}",
             f"line_count={len(lines)}",
+            f"expected_effect_count={expected_effect_count}",
             f"anchor_shift_y={anchor_shift_y}",
             f"category_line={category_line}",
             f"module_name_line={module_name_line}",
@@ -638,11 +641,8 @@ class AppController:
             category_line = ""
             module_name_line = ""
             module_cache_key = ""
-            configured = [
-                (index, region)
-                for index, region in enumerate(self._effect_regions[:3], start=1)
-                if region is not None
-            ]
+            expected_effect_count = 3
+            required_slots: list[int] = [1, 2, 3]
             selected_shift_y = 0
             used_effect_regions: list[CaptureRegion | None] = [None, None, None]
             used_category_region: CaptureRegion | None = None
@@ -664,6 +664,19 @@ class AppController:
                     module_name_line or "<empty>",
                     module_cache_key or "<empty>",
                 )
+            expected_effect_count = infer_expected_effect_count(module_name_line)
+            required_slots = list(range(1, expected_effect_count + 1))
+            logger.info(
+                "Expected effect count inferred (module=%s, expected=%s)",
+                module_name_line or "<empty>",
+                expected_effect_count,
+            )
+
+            configured = [
+                (index, region)
+                for index, region in enumerate(self._effect_regions[:3], start=1)
+                if region is not None and index in required_slots
+            ]
 
             cache_entry = self._position_cache.lookup(module_cache_key) if module_cache_key else None
             if module_cache_key and cache_entry is None:
@@ -672,38 +685,55 @@ class AppController:
                 logger.info("OCR position cache hit (key=%s)", module_cache_key)
 
             cache_effect_regions = (
-                [(idx, region) for idx, region in enumerate(cache_entry.effect_regions, start=1) if region is not None]
+                [
+                    (idx, region)
+                    for idx, region in enumerate(cache_entry.effect_regions, start=1)
+                    if region is not None and idx in required_slots
+                ]
                 if cache_entry is not None
                 else []
             )
             cache_effect_applied = False
             if cache_effect_regions:
                 slot_order = [idx for idx, _ in cache_effect_regions]
-                slot_images, slot_lines = self._capture_and_extract_slot_lines(cache_effect_regions)
-                complete_count, _score = self._evaluate_slot_lines_quality(slot_order, slot_lines)
-                if complete_count >= len(slot_order):
-                    for index in slot_order:
-                        image = slot_images[index]
-                        line = slot_lines.get(index, "")
-                        if debug_dir is not None:
-                            self._save_debug_slot_output(debug_dir, slot_index=index, image=image, line=line)
-                        if line:
-                            lines.append(line)
-                        logger.info("Region OCR done (slot=%s, source=cache, line=%s)", index, line or "<empty>")
-                    used_effect_regions = self._slot_regions_to_effect_list(cache_effect_regions)
-                    cache_effect_applied = True
-                else:
+                if len(slot_order) < expected_effect_count:
                     logger.info(
-                        "OCR position cache fallback (key=%s, complete=%s, expected=%s)",
+                        "OCR position cache fallback (key=%s, reason=insufficient-slots, actual=%s, expected=%s)",
                         module_cache_key,
-                        complete_count,
                         len(slot_order),
+                        expected_effect_count,
                     )
                     self._position_cache.mark_failure(module_cache_key)
+                else:
+                    slot_images, slot_lines = self._capture_and_extract_slot_lines(cache_effect_regions)
+                    complete_count, _score = self._evaluate_slot_lines_quality(slot_order, slot_lines)
+                    if complete_count >= expected_effect_count:
+                        for index in slot_order:
+                            image = slot_images[index]
+                            line = slot_lines.get(index, "")
+                            if debug_dir is not None:
+                                self._save_debug_slot_output(debug_dir, slot_index=index, image=image, line=line)
+                            if line:
+                                lines.append(line)
+                            logger.info("Region OCR done (slot=%s, source=cache, line=%s)", index, line or "<empty>")
+                        used_effect_regions = self._slot_regions_to_effect_list(cache_effect_regions)
+                        cache_effect_applied = True
+                    else:
+                        logger.info(
+                            "OCR position cache fallback (key=%s, complete=%s, expected=%s)",
+                            module_cache_key,
+                            complete_count,
+                            expected_effect_count,
+                        )
+                        self._position_cache.mark_failure(module_cache_key)
 
             if not cache_effect_applied and configured:
-                logger.info("Using configured effect regions (count=%s)", len(configured))
-                configured_for_ocr = configured[:3]
+                logger.info(
+                    "Using configured effect regions (count=%s, expected=%s)",
+                    len(configured),
+                    expected_effect_count,
+                )
+                configured_for_ocr = configured[:expected_effect_count]
                 slot_order = [index for index, _region in configured_for_ocr]
                 slot_images, slot_lines = self._capture_and_extract_slot_lines(configured_for_ocr)
                 complete_count, _score = self._evaluate_slot_lines_quality(slot_order, slot_lines)
@@ -747,7 +777,7 @@ class AppController:
                     logger.info("Region OCR done (slot=%s, line=%s)", index, line or "<empty>")
             elif not cache_effect_applied:
                 image = self.capture.capture()
-                lines = self.ocr_engine.extract_effect_texts(image, max_effects=3)
+                lines = self.ocr_engine.extract_effect_texts(image, max_effects=expected_effect_count)
                 if debug_dir is not None:
                     self._save_debug_slot_output(
                         debug_dir,
@@ -800,12 +830,13 @@ class AppController:
                     token=token,
                     lines=lines,
                     raw_text=raw_text,
+                    expected_effect_count=expected_effect_count,
                     anchor_shift_y=selected_shift_y,
                     category_line=category_line,
                     module_name_line=module_name_line,
                     module_cache_key=module_cache_key,
                 )
-            candidates = parse_ocr_text(raw_text, max_effects=3)
+            candidates = parse_ocr_text(raw_text, max_effects=expected_effect_count)
             elapsed = time.monotonic() - started
             logger.info(
                 "Processing success (token=%s, elapsed_sec=%.3f, raw_len=%s, lines=%s, candidates=%s)",

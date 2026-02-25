@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from module_ocr_tool.app.normalizer import normalize_module_name_text, parse_category_text, parse_ocr_text
+from module_ocr_tool.app.normalizer import (
+    infer_expected_effect_count,
+    normalize_module_name_text,
+    parse_category_text,
+    parse_ocr_text,
+)
 
 
 def test_parse_normal_line() -> None:
@@ -92,3 +97,15 @@ def test_normalize_module_name_text() -> None:
 
 def test_normalize_module_name_text_empty() -> None:
     assert normalize_module_name_text("   ") == ""
+
+
+def test_infer_expected_effect_count_basic() -> None:
+    assert infer_expected_effect_count("基本攻撃型モジュール") == 1
+
+
+def test_infer_expected_effect_count_high_performance() -> None:
+    assert infer_expected_effect_count("高性能防御型モジュール") == 2
+
+
+def test_infer_expected_effect_count_default() -> None:
+    assert infer_expected_effect_count("卓越防御型モジュール") == 3

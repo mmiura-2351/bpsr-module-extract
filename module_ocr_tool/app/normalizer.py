@@ -93,6 +93,17 @@ def normalize_module_name_text(label: str) -> str:
     return sanitized.lower()
 
 
+def infer_expected_effect_count(module_name_text: str) -> int:
+    normalized = normalize_module_name_text(module_name_text)
+    if not normalized:
+        return 3
+    if normalized.startswith("基本"):
+        return 1
+    if normalized.startswith("高性能"):
+        return 2
+    return 3
+
+
 def _extract_value_and_label(raw_line: str) -> tuple[int | None, str]:
     line = raw_line.strip()
     match = VALUE_PATTERN.search(line)
