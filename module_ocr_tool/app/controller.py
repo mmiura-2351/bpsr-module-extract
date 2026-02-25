@@ -133,10 +133,16 @@ class AppController:
             logger.info("Status: %s -> %s (%s)", previous, status, reason)
 
     def _format_region_summary(self) -> str:
-        labels = ["効果1", "効果2", "効果3", "カテゴリ", "モジュール名"]
+        ordered_slots = [
+            (4, "モジュール名"),
+            (3, "カテゴリ名"),
+            (0, "効果1"),
+            (1, "効果2"),
+            (2, "効果3"),
+        ]
         segments: list[str] = []
-        for index, region in enumerate(self._effect_regions):
-            label = labels[index] if index < len(labels) else f"範囲{index + 1}"
+        for slot_index, label in ordered_slots:
+            region = self._effect_regions[slot_index] if slot_index < len(self._effect_regions) else None
             if region is None:
                 segments.append(f"{label}:未設定")
             else:

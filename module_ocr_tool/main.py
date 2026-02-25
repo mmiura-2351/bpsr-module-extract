@@ -14,7 +14,7 @@ def main() -> None:
 
     root = tk.Tk()
     root.title("Module OCR Tool")
-    root.geometry("640x360")
+    root.geometry("760x500")
     controller = AppController(root, log_path=str(log_path))
     controller.run()
     root.mainloop()

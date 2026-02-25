@@ -31,12 +31,19 @@ class MainWindow(ttk.Frame):
         self._on_apply_region = on_apply_region
         self._on_drag_select_region = on_drag_select_region
 
+        # 内部スロット:
+        # 0=効果1, 1=効果2, 2=効果3, 3=カテゴリ, 4=モジュール名
+        # UI表示順:
+        # 0=モジュール名, 1=カテゴリ名, 2=効果1, 3=効果2, 4=効果3
+        self._display_to_internal = [4, 3, 0, 1, 2]
+        self._internal_to_display = {internal: display for display, internal in enumerate(self._display_to_internal)}
+
         self.status_var = tk.StringVar(value="待機中")
         self.module_count_var = tk.StringVar(value="0")
         self.hotkey_note_var = tk.StringVar(value="OCR実行ボタンを使用してください。")
         self.log_path_var = tk.StringVar(value="-")
         self.region_summary_var = tk.StringVar(
-            value="効果1:未設定 / 効果2:未設定 / 効果3:未設定 / カテゴリ:未設定 / モジュール名:未設定"
+            value="モジュール名:未設定 / カテゴリ名:未設定 / 効果1:未設定 / 効果2:未設定 / 効果3:未設定"
         )
         self.last_ocr_var = tk.StringVar(value="-")
 
@@ -58,7 +65,6 @@ class MainWindow(ttk.Frame):
         action_frame.grid_columnconfigure(1, weight=1)
         action_frame.grid_columnconfigure(2, weight=1)
         action_frame.grid_columnconfigure(3, weight=1)
-        action_frame.grid_columnconfigure(4, weight=1)
 
         start_button = ttk.Button(action_frame, text="処理開始", command=self._on_start)
         start_button.grid(row=0, column=0, sticky="w")
@@ -66,14 +72,11 @@ class MainWindow(ttk.Frame):
         manual_button = ttk.Button(action_frame, text="OCR実行", command=self._on_manual_run)
         manual_button.grid(row=0, column=1, sticky="w")
 
-        debug_button = ttk.Button(action_frame, text="デバッグOCR", command=self._on_debug_run)
-        debug_button.grid(row=0, column=2, sticky="w")
-
         export_button = ttk.Button(action_frame, text="JSON出力(新規)", command=self._on_export)
-        export_button.grid(row=0, column=3, sticky="e", padx=(0, 8))
+        export_button.grid(row=0, column=2, sticky="e", padx=(0, 8))
 
         update_export_button = ttk.Button(action_frame, text="既存JSON更新", command=self._on_update_export)
-        update_export_button.grid(row=0, column=4, sticky="e")
+        update_export_button.grid(row=0, column=3, sticky="e")
 
         ttk.Separator(self).grid(row=2, column=0, columnspan=2, sticky="ew", pady=12)
 
@@ -96,7 +99,7 @@ class MainWindow(ttk.Frame):
         for col, header in enumerate(headers):
             ttk.Label(region_frame, text=header).grid(row=0, column=col, sticky="w", padx=(0, 6))
 
-        region_labels = ["効果1", "効果2", "効果3", "カテゴリ", "モジュール名"]
+        region_labels = ["モジュール名", "カテゴリ名", "効果1", "効果2", "効果3"]
         for index, label in enumerate(region_labels):
             enabled_var = tk.BooleanVar(value=False)
             left_var = tk.StringVar(value="0")
@@ -136,8 +139,9 @@ class MainWindow(ttk.Frame):
             self.grid_columnconfigure(col, weight=1)
 
     def _emit_apply_region(self, index: int) -> None:
+        internal_index = self._display_to_internal[index]
         self._on_apply_region(
-            index,
+            internal_index,
             self.region_enabled_vars[index].get(),
             self.region_left_vars[index].get(),
             self.region_top_vars[index].get(),
@@ -146,7 +150,8 @@ class MainWindow(ttk.Frame):
         )
 
     def _emit_drag_select(self, index: int) -> None:
-        self._on_drag_select_region(index)
+        internal_index = self._display_to_internal[index]
+        self._on_drag_select_region(internal_index)
 
     def set_status(self, status: str) -> None:
         self.status_var.set(status)
@@ -173,11 +178,14 @@ class MainWindow(ttk.Frame):
         width: int,
         height: int,
     ) -> None:
-        self.region_enabled_vars[index].set(enabled)
-        self.region_left_vars[index].set(str(left))
-        self.region_top_vars[index].set(str(top))
-        self.region_width_vars[index].set(str(width))
-        self.region_height_vars[index].set(str(height))
+        display_index = self._internal_to_display.get(index)
+        if display_index is None:
+            return
+        self.region_enabled_vars[display_index].set(enabled)
+        self.region_left_vars[display_index].set(str(left))
+        self.region_top_vars[display_index].set(str(top))
+        self.region_width_vars[display_index].set(str(width))
+        self.region_height_vars[display_index].set(str(height))
 
     def set_last_ocr_text(self, text: str | None) -> None:
         display = text.strip() if text else "-"
