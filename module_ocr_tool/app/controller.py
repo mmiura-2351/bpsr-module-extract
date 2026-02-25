@@ -306,8 +306,9 @@ class AppController:
     def _compute_processing_timeout_ms(self) -> int:
         configured_regions = [region for region in self._effect_regions[:3] if region is not None]
         if configured_regions:
-            per_region_sec = max(self.ocr_engine.timeout_sec * 0.7, 7.0)
-            estimated_sec = 5.0 + (per_region_sec * len(configured_regions))
+            per_region_sec = max(self.ocr_engine.timeout_sec, 8.0)
+            # 初回OCR + アンカーY探索フォールバック分の余裕を見込む。
+            estimated_sec = 8.0 + (per_region_sec * len(configured_regions))
         else:
             estimated_sec = max((self.ocr_engine.timeout_sec * 2.0) + 6.0, 20.0)
 
@@ -366,17 +367,149 @@ class AppController:
         token: int,
         lines: list[str],
         raw_text: str,
+        anchor_shift_y: int = 0,
     ) -> None:
         summary_path = debug_dir / "ocr_debug_summary.txt"
         content = [
             f"token={token}",
             f"line_count={len(lines)}",
+            f"anchor_shift_y={anchor_shift_y}",
             "",
             "[lines]",
         ]
         content.extend(lines)
         content.extend(["", "[raw_text]", raw_text])
         summary_path.write_text("\n".join(content), encoding="utf-8")
+
+    def _evaluate_line_quality(self, line: str) -> tuple[int, bool]:
+        cleaned = line.strip()
+        if not cleaned:
+            return 0, False
+
+        parsed = parse_ocr_text(cleaned, max_effects=1)
+        if not parsed:
+            return 0, False
+
+        candidate = parsed[0]
+        score = 0
+        if candidate.resolved_effect_id is not None:
+            score += 120
+        elif candidate.jp_label_candidates:
+            score += 30
+
+        if candidate.parsed_value is not None:
+            score += 60
+
+        if candidate.resolved_effect_id is not None and candidate.parsed_value is not None:
+            score += 120
+            return score, True
+        return score, False
+
+    def _evaluate_slot_lines_quality(
+        self,
+        slot_order: list[int],
+        slot_lines: dict[int, str],
+    ) -> tuple[int, int]:
+        complete_count = 0
+        total_score = 0
+        for slot_index in slot_order:
+            line = slot_lines.get(slot_index, "")
+            score, complete = self._evaluate_line_quality(line)
+            total_score += score
+            if complete:
+                complete_count += 1
+        return complete_count, total_score
+
+    def _capture_and_extract_slot_lines(
+        self,
+        regions: list[tuple[int, CaptureRegion]],
+    ) -> tuple[dict[int, object], dict[int, str]]:
+        slot_images: dict[int, object] = {}
+        for slot_index, region in regions:
+            slot_images[slot_index] = self.capture.capture(region_override=region)
+
+        slot_lines: dict[int, str] = {}
+        worker_count = min(len(slot_images), 3)
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="ocr-slot") as executor:
+            future_to_slot = {
+                executor.submit(self._extract_single_effect_line, image): slot_index
+                for slot_index, image in slot_images.items()
+            }
+            for future in as_completed(future_to_slot):
+                slot_index = future_to_slot[future]
+                slot_lines[slot_index] = future.result()
+        return slot_images, slot_lines
+
+    def _shift_region_y(self, region: CaptureRegion, shift_y: int) -> CaptureRegion:
+        return {
+            "left": region["left"],
+            "top": max(region["top"] + shift_y, 0),
+            "width": region["width"],
+            "height": region["height"],
+        }
+
+    def _build_shift_candidates(self, *, max_abs_shift: int, step: int) -> list[int]:
+        candidates = [0]
+        current = step
+        while current <= max_abs_shift:
+            candidates.append(-current)
+            candidates.append(current)
+            current += step
+        return candidates
+
+    def _search_best_anchor_shifted_lines(
+        self,
+        configured: list[tuple[int, CaptureRegion]],
+        *,
+        initial_images: dict[int, object],
+        initial_lines: dict[int, str],
+    ) -> tuple[dict[int, object], dict[int, str], int]:
+        slot_order = [slot_index for slot_index, _ in configured]
+        best_images = dict(initial_images)
+        best_lines = dict(initial_lines)
+        best_shift = 0
+        best_quality = self._evaluate_slot_lines_quality(slot_order, best_lines)
+
+        anchor_slot = configured[0][0]
+        shift_candidates = self._build_shift_candidates(max_abs_shift=72, step=12)
+        logger.info(
+            "Anchor shift search start (anchor_slot=%s, candidates=%s, initial_complete=%s)",
+            anchor_slot,
+            len(shift_candidates),
+            best_quality[0],
+        )
+
+        for shift_y in shift_candidates:
+            if shift_y == 0:
+                continue
+            shifted_regions = [
+                (slot_index, self._shift_region_y(region, shift_y))
+                for slot_index, region in configured
+            ]
+            slot_images, slot_lines = self._capture_and_extract_slot_lines(shifted_regions)
+            quality = self._evaluate_slot_lines_quality(slot_order, slot_lines)
+            if quality > best_quality:
+                best_quality = quality
+                best_shift = shift_y
+                best_images = slot_images
+                best_lines = slot_lines
+
+            if best_quality[0] >= len(slot_order):
+                logger.info(
+                    "Anchor shift search early stop (shift_y=%s, complete=%s, score=%s)",
+                    best_shift,
+                    best_quality[0],
+                    best_quality[1],
+                )
+                break
+
+        logger.info(
+            "Anchor shift search done (best_shift_y=%s, complete=%s, score=%s)",
+            best_shift,
+            best_quality[0],
+            best_quality[1],
+        )
+        return best_images, best_lines, best_shift
 
     def _save_failed_ocr_sample(self, image, *, token: int, slot_index: int, reason: str, line: str) -> None:
         if image is None:
@@ -425,25 +558,22 @@ class AppController:
 
             lines: list[str] = []
             configured = [(index, region) for index, region in enumerate(self._effect_regions, start=1) if region is not None]
+            selected_shift_y = 0
 
             if configured:
                 logger.info("Using configured effect regions (count=%s)", len(configured))
-                slot_images: dict[int, object] = {}
-                for index, region in configured[:3]:
-                    slot_images[index] = self.capture.capture(region_override=region)
+                configured_for_ocr = configured[:3]
+                slot_order = [index for index, _region in configured_for_ocr]
+                slot_images, slot_lines = self._capture_and_extract_slot_lines(configured_for_ocr)
+                complete_count, _score = self._evaluate_slot_lines_quality(slot_order, slot_lines)
+                if complete_count < len(slot_order):
+                    slot_images, slot_lines, selected_shift_y = self._search_best_anchor_shifted_lines(
+                        configured_for_ocr,
+                        initial_images=slot_images,
+                        initial_lines=slot_lines,
+                    )
 
-                slot_lines: dict[int, str] = {}
-                worker_count = min(len(slot_images), 3)
-                with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="ocr-slot") as executor:
-                    future_to_slot = {
-                        executor.submit(self._extract_single_effect_line, image): index
-                        for index, image in slot_images.items()
-                    }
-                    for future in as_completed(future_to_slot):
-                        index = future_to_slot[future]
-                        slot_lines[index] = future.result()
-
-                for index, _region in configured[:3]:
+                for index in slot_order:
                     image = slot_images[index]
                     line = slot_lines.get(index, "")
                     if debug_dir is not None:
@@ -482,7 +612,13 @@ class AppController:
 
             raw_text = "\n".join(lines)
             if debug_dir is not None:
-                self._write_debug_summary(debug_dir, token=token, lines=lines, raw_text=raw_text)
+                self._write_debug_summary(
+                    debug_dir,
+                    token=token,
+                    lines=lines,
+                    raw_text=raw_text,
+                    anchor_shift_y=selected_shift_y,
+                )
             candidates = parse_ocr_text(raw_text, max_effects=3)
             elapsed = time.monotonic() - started
             logger.info(
