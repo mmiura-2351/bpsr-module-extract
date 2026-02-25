@@ -638,9 +638,9 @@ class AppController:
                 debug_dir = self._create_debug_output_dir(token)
                 logger.info("Debug capture enabled (token=%s, dir=%s)", token, debug_dir)
             logger.info("Capture thread start (token=%s)", token)
-            base_frame = self.capture.capture_full()
+            base_frame = self.capture.capture_virtual_full()
             logger.info(
-                "Captured base frame once (token=%s, shape=%s, origin=(%s,%s), size=(%s,%s))",
+                "Captured base frame once (virtual-screen, token=%s, shape=%s, origin=(%s,%s), size=(%s,%s))",
                 token,
                 getattr(base_frame.image, "shape", None),
                 base_frame.left,

@@ -62,6 +62,31 @@ class ScreenCapture:
             )
             return frame
 
+    def capture_virtual_full(self) -> CapturedFrame:
+        logger.debug("Capture virtual full frame requested")
+        mss, np = self._load_dependencies()
+        with mss.mss() as sct:
+            monitor = sct.monitors[0]
+            logger.debug("Capture virtual target resolved: %s", monitor)
+            screenshot = sct.grab(monitor)
+            image = np.array(screenshot)
+            if image.shape[-1] == 4:
+                image = image[:, :, :3]
+            frame = CapturedFrame(
+                image=image,
+                left=int(monitor.get("left", 0)),
+                top=int(monitor.get("top", 0)),
+                width=int(monitor.get("width", int(image.shape[1]))),
+                height=int(monitor.get("height", int(image.shape[0]))),
+            )
+            logger.debug(
+                "Capture virtual finished (shape=%s, origin=(%s,%s))",
+                image.shape,
+                frame.left,
+                frame.top,
+            )
+            return frame
+
     def crop_from_frame(self, frame: CapturedFrame, *, region: CaptureRegion):
         x0 = int(region["left"]) - frame.left
         y0 = int(region["top"]) - frame.top
