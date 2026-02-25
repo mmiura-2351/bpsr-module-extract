@@ -29,7 +29,7 @@ EFFECT_ID_TO_JP: dict[str, str] = {value: key for key, value in JP_TO_EFFECT_ID.
 CATEGORY_ID_TO_JP: dict[str, str] = {
     "general": "汎用",
     "attack": "攻撃",
-    "defense": "防御",
+    "defense": "生存",
     "support": "支援",
 }
 
@@ -38,7 +38,7 @@ CATEGORY_JP_TO_ID: dict[str, str] = {
     "汎用": "general",
     "一般": "general",
     "攻撃": "attack",
+    "生存": "defense",
     "防御": "defense",
     "支援": "support",
-    "生存": "defense",
 }

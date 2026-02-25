@@ -69,6 +69,11 @@ def test_parse_category_text_survival_alias_maps_to_defense() -> None:
     assert parsed.resolved_category == "defense"
 
 
+def test_parse_category_text_defense_alias_maps_to_defense() -> None:
+    parsed = parse_category_text("防御型モジュール")
+    assert parsed.resolved_category == "defense"
+
+
 def test_parse_category_text_empty_falls_back_to_general() -> None:
     parsed = parse_category_text("")
     assert parsed.resolved_category == "general"
