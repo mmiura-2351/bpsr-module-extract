@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
@@ -272,12 +273,31 @@ class AppController:
 
         self._processing_token += 1
         token = self._processing_token
-        timeout_ms = max(int(self.ocr_engine.timeout_sec * 1000) + 3000, 8000)
+        timeout_ms = self._compute_processing_timeout_ms()
         logger.info("Processing started (token=%s, timeout_ms=%s, source=%s)", token, timeout_ms, source)
         self.root.after(timeout_ms, lambda: self._handle_processing_timeout(token))
 
         worker = threading.Thread(target=self._process_capture_background, args=(token,), daemon=True)
         worker.start()
+
+    def _compute_processing_timeout_ms(self) -> int:
+        configured_regions = [region for region in self._effect_regions[:3] if region is not None]
+        if configured_regions:
+            per_region_sec = max(self.ocr_engine.timeout_sec * 0.7, 7.0)
+            estimated_sec = 5.0 + (per_region_sec * len(configured_regions))
+        else:
+            estimated_sec = max((self.ocr_engine.timeout_sec * 2.0) + 6.0, 20.0)
+
+        timeout_ms = int(estimated_sec * 1000)
+        timeout_ms = max(timeout_ms, 15000)
+        timeout_ms = min(timeout_ms, 120000)
+        logger.info(
+            "Computed processing timeout (ms=%s, configured_regions=%s, engine_timeout_sec=%.1f)",
+            timeout_ms,
+            len(configured_regions),
+            self.ocr_engine.timeout_sec,
+        )
+        return timeout_ms
 
     def _extract_single_effect_line(self, image) -> str:
         line = self.ocr_engine.extract_effect_line(image)
@@ -335,9 +355,24 @@ class AppController:
 
             if configured:
                 logger.info("Using configured effect regions (count=%s)", len(configured))
+                slot_images: dict[int, object] = {}
                 for index, region in configured[:3]:
-                    image = self.capture.capture(region_override=region)
-                    line = self._extract_single_effect_line(image)
+                    slot_images[index] = self.capture.capture(region_override=region)
+
+                slot_lines: dict[int, str] = {}
+                worker_count = min(len(slot_images), 3)
+                with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="ocr-slot") as executor:
+                    future_to_slot = {
+                        executor.submit(self._extract_single_effect_line, image): index
+                        for index, image in slot_images.items()
+                    }
+                    for future in as_completed(future_to_slot):
+                        index = future_to_slot[future]
+                        slot_lines[index] = future.result()
+
+                for index, _region in configured[:3]:
+                    image = slot_images[index]
+                    line = slot_lines.get(index, "")
                     if line:
                         lines.append(line)
                         candidate = parse_ocr_text(line, max_effects=1)
