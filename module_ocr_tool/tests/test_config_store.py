@@ -8,7 +8,7 @@ from module_ocr_tool.app.config_store import AppConfig, load_app_config, save_ap
 def test_load_config_defaults_when_file_missing(tmp_path) -> None:
     config, path = load_app_config(str(tmp_path / "missing.json"))
     assert path.name == "missing.json"
-    assert config.effect_regions == [None, None, None, None]
+    assert config.effect_regions == [None, None, None, None, None]
     assert config.last_export_path is None
     assert config.last_update_json_path is None
 
@@ -21,6 +21,7 @@ def test_save_and_load_config_roundtrip(tmp_path) -> None:
             None,
             {"left": 100, "top": 280, "width": 300, "height": 40},
             {"left": 100, "top": 340, "width": 300, "height": 40},
+            {"left": 100, "top": 80, "width": 420, "height": 54},
         ],
         last_export_path="C:/tmp/output.json",
         last_update_json_path="C:/tmp/existing.json",
@@ -33,6 +34,7 @@ def test_save_and_load_config_roundtrip(tmp_path) -> None:
     assert loaded.effect_regions[1] is None
     assert loaded.effect_regions[2] == {"left": 100, "top": 280, "width": 300, "height": 40}
     assert loaded.effect_regions[3] == {"left": 100, "top": 340, "width": 300, "height": 40}
+    assert loaded.effect_regions[4] == {"left": 100, "top": 80, "width": 420, "height": 54}
     assert loaded.last_export_path == "C:/tmp/output.json"
     assert loaded.last_update_json_path == "C:/tmp/existing.json"
 
@@ -51,3 +53,4 @@ def test_load_legacy_three_slot_region_config(tmp_path) -> None:
     loaded, _ = load_app_config(str(config_path))
     assert loaded.effect_regions[:3] == legacy["effect_regions"]
     assert loaded.effect_regions[3] is None
+    assert loaded.effect_regions[4] is None

@@ -32,6 +32,14 @@ CATEGORY_VARIANTS = str.maketrans(
         "I": "|",
     }
 )
+MODULE_NAME_VARIANTS = str.maketrans(
+    {
+        "　": " ",
+        "｜": "|",
+        "I": "|",
+        "l": "|",
+    }
+)
 MIN_EFFECT_VALUE = 1
 MAX_EFFECT_VALUE = 10
 VALID_EFFECT_VALUE_PAIRS: set[tuple[str, int]] = {
@@ -72,6 +80,17 @@ def normalize_category_label(label: str) -> str:
     sanitized = re.sub(r"\s+", "", sanitized)
     sanitized = re.sub(r"[^ぁ-んァ-ン一-龥]", "", sanitized)
     return sanitized.strip(":：-")
+
+
+def normalize_module_name_text(label: str) -> str:
+    line = next((chunk.strip() for chunk in label.splitlines() if chunk.strip()), label.strip())
+    if not line:
+        return ""
+    sanitized = line.translate(MODULE_NAME_VARIANTS)
+    sanitized = sanitized.replace("|", "")
+    sanitized = re.sub(r"\s+", "", sanitized)
+    sanitized = re.sub(r"[^ぁ-んァ-ンー一-龥A-Za-z0-9+._-]", "", sanitized)
+    return sanitized.lower()
 
 
 def _extract_value_and_label(raw_line: str) -> tuple[int | None, str]:

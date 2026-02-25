@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
@@ -17,8 +18,15 @@ from module_ocr_tool.app.exporter import (
     write_export_json,
 )
 from module_ocr_tool.app.models import EffectEntry, ModuleRecord
-from module_ocr_tool.app.normalizer import ParsedCategoryCandidate, ParsedEffectCandidate, parse_category_text, parse_ocr_text
+from module_ocr_tool.app.normalizer import (
+    ParsedCategoryCandidate,
+    ParsedEffectCandidate,
+    normalize_module_name_text,
+    parse_category_text,
+    parse_ocr_text,
+)
 from module_ocr_tool.app.ocr_engine import TesseractOcrEngine
+from module_ocr_tool.app.position_cache import PositionCacheStore
 from module_ocr_tool.app.state import AppState
 from module_ocr_tool.app.ui.main_window import MainWindow
 from module_ocr_tool.app.ui.region_selector import RegionSelectorOverlay
@@ -27,19 +35,30 @@ from module_ocr_tool.app.ui.result_dialog import ResultDialog
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class _ProcessingCacheContext:
+    module_name_key: str = ""
+    module_name_raw: str = ""
+    effect_regions: list[CaptureRegion | None] | None = None
+    category_region: CaptureRegion | None = None
+
+
 class AppController:
     def __init__(self, root: tk.Tk, *, log_path: str | None = None) -> None:
         self.root = root
         self.log_path = log_path
         self._config, self._config_path = load_app_config()
+        self._position_cache = PositionCacheStore(config_path=self._config_path)
+        self._position_cache.load()
         self.state = AppState()
         self.capture = ScreenCapture()
         self.ocr_engine = TesseractOcrEngine()
 
         loaded_regions = list(self._config.effect_regions)
-        self._effect_regions: list[CaptureRegion | None] = (loaded_regions + [None, None, None, None])[:4]
+        self._effect_regions: list[CaptureRegion | None] = (loaded_regions + [None, None, None, None, None])[:5]
         self._processing_token = 0
         self._processing_debug_flags: dict[int, bool] = {}
+        self._last_processing_cache_context = _ProcessingCacheContext()
 
         self._region_selector: RegionSelectorOverlay | None = None
         self._region_selector_slot = -1
@@ -57,11 +76,20 @@ class AppController:
         self.main_window.pack(fill="both", expand=True, padx=16, pady=16)
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        logger.info("Controller initialized (log_path=%s, config_path=%s)", self.log_path, self._config_path)
+        logger.info(
+            "Controller initialized (log_path=%s, config_path=%s, cache_path=%s)",
+            self.log_path,
+            self._config_path,
+            self._position_cache.path,
+        )
 
     def _on_close(self) -> None:
         logger.info("Application closing")
         self._save_config()
+        try:
+            self._position_cache.save()
+        except Exception:
+            logger.exception("Failed to save position cache: %s", self._position_cache.path)
         self.root.destroy()
 
     def _save_config(self) -> None:
@@ -105,7 +133,7 @@ class AppController:
             logger.info("Status: %s -> %s (%s)", previous, status, reason)
 
     def _format_region_summary(self) -> str:
-        labels = ["効果1", "効果2", "効果3", "カテゴリ"]
+        labels = ["効果1", "効果2", "効果3", "カテゴリ", "モジュール名"]
         segments: list[str] = []
         for index, region in enumerate(self._effect_regions):
             label = labels[index] if index < len(labels) else f"範囲{index + 1}"
@@ -308,6 +336,7 @@ class AppController:
     def _compute_processing_timeout_ms(self) -> int:
         configured_regions = [region for region in self._effect_regions[:3] if region is not None]
         category_region = self._effect_regions[3] if len(self._effect_regions) >= 4 else None
+        module_name_region = self._effect_regions[4] if len(self._effect_regions) >= 5 else None
         if configured_regions:
             per_region_sec = max(self.ocr_engine.timeout_sec, 8.0)
             # 初回OCR + アンカーY探索フォールバック分の余裕を見込む。
@@ -315,6 +344,8 @@ class AppController:
         else:
             estimated_sec = max((self.ocr_engine.timeout_sec * 2.0) + 6.0, 20.0)
         if category_region is not None:
+            estimated_sec += max(self.ocr_engine.timeout_sec, 8.0)
+        if module_name_region is not None:
             estimated_sec += max(self.ocr_engine.timeout_sec, 8.0)
 
         timeout_ms = int(estimated_sec * 1000)
@@ -374,6 +405,8 @@ class AppController:
         raw_text: str,
         anchor_shift_y: int = 0,
         category_line: str = "",
+        module_name_line: str = "",
+        module_cache_key: str = "",
     ) -> None:
         summary_path = debug_dir / "ocr_debug_summary.txt"
         content = [
@@ -381,6 +414,8 @@ class AppController:
             f"line_count={len(lines)}",
             f"anchor_shift_y={anchor_shift_y}",
             f"category_line={category_line}",
+            f"module_name_line={module_name_line}",
+            f"module_cache_key={module_cache_key}",
             "",
             "[lines]",
         ]
@@ -426,6 +461,36 @@ class AppController:
             if complete:
                 complete_count += 1
         return complete_count, total_score
+
+    def _screen_profile(self) -> str:
+        try:
+            width = int(self.root.winfo_screenwidth())
+            height = int(self.root.winfo_screenheight())
+            return f"{width}x{height}"
+        except Exception:
+            return "unknown-screen"
+
+    def _build_module_cache_key(self, module_name_raw: str) -> str:
+        normalized_name = normalize_module_name_text(module_name_raw)
+        if not normalized_name:
+            return ""
+        return f"{normalized_name}|{self._screen_profile()}"
+
+    def _slot_regions_to_effect_list(
+        self,
+        slot_regions: list[tuple[int, CaptureRegion]],
+    ) -> list[CaptureRegion | None]:
+        regions: list[CaptureRegion | None] = [None, None, None]
+        for slot_index, region in slot_regions:
+            if slot_index < 1 or slot_index > 3:
+                continue
+            regions[slot_index - 1] = {
+                "left": region["left"],
+                "top": region["top"],
+                "width": region["width"],
+                "height": region["height"],
+            }
+        return regions
 
     def _capture_and_extract_slot_lines(
         self,
@@ -565,14 +630,72 @@ class AppController:
 
             lines: list[str] = []
             category_line = ""
+            module_name_line = ""
+            module_cache_key = ""
             configured = [
                 (index, region)
                 for index, region in enumerate(self._effect_regions[:3], start=1)
                 if region is not None
             ]
             selected_shift_y = 0
+            used_effect_regions: list[CaptureRegion | None] = [None, None, None]
+            used_category_region: CaptureRegion | None = None
 
-            if configured:
+            module_name_region = self._effect_regions[4] if len(self._effect_regions) >= 5 else None
+            if module_name_region is not None:
+                module_name_image = self.capture.capture(region_override=module_name_region)
+                module_name_line = self.ocr_engine.extract_module_name_line(module_name_image)
+                module_cache_key = self._build_module_cache_key(module_name_line)
+                if debug_dir is not None:
+                    self._save_debug_slot_output(
+                        debug_dir,
+                        slot_index=5,
+                        image=module_name_image,
+                        line=module_name_line,
+                    )
+                logger.info(
+                    "Module-name OCR done (line=%s, cache_key=%s)",
+                    module_name_line or "<empty>",
+                    module_cache_key or "<empty>",
+                )
+
+            cache_entry = self._position_cache.lookup(module_cache_key) if module_cache_key else None
+            if module_cache_key and cache_entry is None:
+                logger.info("OCR position cache miss (key=%s)", module_cache_key)
+            elif cache_entry is not None:
+                logger.info("OCR position cache hit (key=%s)", module_cache_key)
+
+            cache_effect_regions = (
+                [(idx, region) for idx, region in enumerate(cache_entry.effect_regions, start=1) if region is not None]
+                if cache_entry is not None
+                else []
+            )
+            cache_effect_applied = False
+            if cache_effect_regions:
+                slot_order = [idx for idx, _ in cache_effect_regions]
+                slot_images, slot_lines = self._capture_and_extract_slot_lines(cache_effect_regions)
+                complete_count, _score = self._evaluate_slot_lines_quality(slot_order, slot_lines)
+                if complete_count >= len(slot_order):
+                    for index in slot_order:
+                        image = slot_images[index]
+                        line = slot_lines.get(index, "")
+                        if debug_dir is not None:
+                            self._save_debug_slot_output(debug_dir, slot_index=index, image=image, line=line)
+                        if line:
+                            lines.append(line)
+                        logger.info("Region OCR done (slot=%s, source=cache, line=%s)", index, line or "<empty>")
+                    used_effect_regions = self._slot_regions_to_effect_list(cache_effect_regions)
+                    cache_effect_applied = True
+                else:
+                    logger.info(
+                        "OCR position cache fallback (key=%s, complete=%s, expected=%s)",
+                        module_cache_key,
+                        complete_count,
+                        len(slot_order),
+                    )
+                    self._position_cache.mark_failure(module_cache_key)
+
+            if not cache_effect_applied and configured:
                 logger.info("Using configured effect regions (count=%s)", len(configured))
                 configured_for_ocr = configured[:3]
                 slot_order = [index for index, _region in configured_for_ocr]
@@ -584,6 +707,12 @@ class AppController:
                         initial_images=slot_images,
                         initial_lines=slot_lines,
                     )
+                effective_regions = (
+                    configured_for_ocr
+                    if selected_shift_y == 0
+                    else [(slot_index, self._shift_region_y(region, selected_shift_y)) for slot_index, region in configured_for_ocr]
+                )
+                used_effect_regions = self._slot_regions_to_effect_list(effective_regions)
 
                 for index in slot_order:
                     image = slot_images[index]
@@ -610,7 +739,7 @@ class AppController:
                             line="",
                         )
                     logger.info("Region OCR done (slot=%s, line=%s)", index, line or "<empty>")
-            else:
+            elif not cache_effect_applied:
                 image = self.capture.capture()
                 lines = self.ocr_engine.extract_effect_texts(image, max_effects=3)
                 if debug_dir is not None:
@@ -622,22 +751,43 @@ class AppController:
                     )
                 logger.info("Whole-area OCR done (lines=%s)", len(lines))
 
-            if len(self._effect_regions) >= 4 and self._effect_regions[3] is not None:
-                category_region = self._effect_regions[3]
-                if category_region is not None:
-                    category_image = self.capture.capture(region_override=category_region)
-                    category_line = self.ocr_engine.extract_category_line(category_image)
-                    if debug_dir is not None:
-                        self._save_debug_slot_output(
-                            debug_dir,
-                            slot_index=4,
-                            image=category_image,
-                            line=category_line,
-                        )
-                    logger.info("Category OCR done (line=%s)", category_line or "<empty>")
+            configured_category_region = self._effect_regions[3] if len(self._effect_regions) >= 4 else None
+            category_region_for_ocr = cache_entry.category_region if cache_entry is not None else None
+            category_source = "cache" if category_region_for_ocr is not None else "configured"
+            if category_region_for_ocr is None:
+                category_region_for_ocr = configured_category_region
+            if category_region_for_ocr is not None:
+                category_image = self.capture.capture(region_override=category_region_for_ocr)
+                category_line = self.ocr_engine.extract_category_line(category_image)
+                if debug_dir is not None:
+                    self._save_debug_slot_output(
+                        debug_dir,
+                        slot_index=4,
+                        image=category_image,
+                        line=category_line,
+                    )
+                logger.info(
+                    "Category OCR done (source=%s, line=%s)",
+                    category_source,
+                    category_line or "<empty>",
+                )
+                if not category_line and category_source == "cache" and configured_category_region is not None:
+                    fallback_image = self.capture.capture(region_override=configured_category_region)
+                    fallback_line = self.ocr_engine.extract_category_line(fallback_image)
+                    if fallback_line:
+                        category_line = fallback_line
+                        category_region_for_ocr = configured_category_region
+                        logger.info("Category OCR fallback success (source=configured)")
+                used_category_region = category_region_for_ocr
 
             raw_text = "\n".join(lines)
             category_candidate = parse_category_text(category_line)
+            cache_context = _ProcessingCacheContext(
+                module_name_key=module_cache_key,
+                module_name_raw=module_name_line,
+                effect_regions=used_effect_regions,
+                category_region=used_category_region,
+            )
             if debug_dir is not None:
                 self._write_debug_summary(
                     debug_dir,
@@ -646,6 +796,8 @@ class AppController:
                     raw_text=raw_text,
                     anchor_shift_y=selected_shift_y,
                     category_line=category_line,
+                    module_name_line=module_name_line,
+                    module_cache_key=module_cache_key,
                 )
             candidates = parse_ocr_text(raw_text, max_effects=3)
             elapsed = time.monotonic() - started
@@ -665,6 +817,7 @@ class AppController:
                     category_candidate,
                     raw_text,
                     debug_dir,
+                    cache_context,
                 ),
             )
         except Exception as exc:
@@ -687,6 +840,7 @@ class AppController:
         category_candidate: ParsedCategoryCandidate,
         raw_text: str,
         debug_dir: Path | None,
+        cache_context: _ProcessingCacheContext,
     ) -> None:
         if token != self._processing_token or self.state.status != "processing":
             logger.info("Ignore stale success callback (token=%s, current=%s)", token, self._processing_token)
@@ -695,6 +849,7 @@ class AppController:
         if debug_enabled and debug_dir is not None:
             logger.info("Debug OCR output saved: %s", debug_dir)
             self.main_window.show_info(f"デバッグ出力を保存しました:\n{debug_dir}")
+        self._last_processing_cache_context = cache_context
         self._show_result_dialog(candidates, category_candidate, raw_text)
 
     def _handle_processing_error(self, token: int, message: str) -> None:
@@ -722,10 +877,26 @@ class AppController:
         )
 
     def _cancel_result_edit(self) -> None:
+        self._last_processing_cache_context = _ProcessingCacheContext()
         self._set_status("waiting_capture", reason="result edit canceled")
         self._update_view()
 
+    def _update_position_cache_from_last_context(self) -> None:
+        context = self._last_processing_cache_context
+        effect_regions = context.effect_regions or [None, None, None]
+        if not context.module_name_key or not any(region is not None for region in effect_regions):
+            return
+        self._position_cache.update_success(
+            module_name_key=context.module_name_key,
+            module_name_raw=context.module_name_raw,
+            effect_regions=effect_regions,
+            category_region=context.category_region,
+        )
+        logger.info("OCR position cache updated (key=%s)", context.module_name_key)
+
     def confirm_module(self, module_category: str, effects: list[EffectEntry]) -> None:
+        self._update_position_cache_from_last_context()
+        self._last_processing_cache_context = _ProcessingCacheContext()
         module = ModuleRecord(module_category=module_category, effects=effects[:3])
         if is_duplicate_module(module, self.state.modules):
             logger.info("Duplicate module detected. Skip append.")
@@ -788,6 +959,7 @@ class AppController:
         write_export_json(payload, output_path)
 
     def _handle_error(self, message: str) -> None:
+        self._last_processing_cache_context = _ProcessingCacheContext()
         self._set_status("error", reason="error raised")
         self.state.last_error_message = message
         logger.error("Error: %s", message)

@@ -321,3 +321,14 @@ class TesseractOcrEngine:
         line = next((chunk.strip() for chunk in text.splitlines() if chunk.strip()), "")
         logger.info("Category OCR done (text=%s)", line or "<empty>")
         return line
+
+    def extract_module_name_line(self, image) -> str:
+        text = self.extract_text(
+            image,
+            config_override=self.single_line_config,
+            max_variants=self.label_variant_limit,
+            use_confidence=False,
+        )
+        line = next((chunk.strip() for chunk in text.splitlines() if chunk.strip()), "")
+        logger.info("Module-name OCR done (text=%s)", line or "<empty>")
+        return line

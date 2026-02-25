@@ -144,3 +144,15 @@ def test_extract_category_line(monkeypatch) -> None:
     monkeypatch.setattr(engine, "extract_text", fake_extract_text)
     line = engine.extract_category_line(_FakeImage())
     assert line == "生存型モジュール |"
+
+
+def test_extract_module_name_line(monkeypatch) -> None:
+    engine = TesseractOcrEngine()
+
+    def fake_extract_text(_image, *, config_override=None, **_kwargs):  # noqa: ANN001
+        assert config_override == engine.single_line_config
+        return "EXC攻撃型モジュール・精選"
+
+    monkeypatch.setattr(engine, "extract_text", fake_extract_text)
+    line = engine.extract_module_name_line(_FakeImage())
+    assert line == "EXC攻撃型モジュール・精選"

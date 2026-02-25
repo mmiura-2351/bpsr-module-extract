@@ -36,7 +36,7 @@ class MainWindow(ttk.Frame):
         self.hotkey_note_var = tk.StringVar(value="OCR実行ボタンを使用してください。")
         self.log_path_var = tk.StringVar(value="-")
         self.region_summary_var = tk.StringVar(
-            value="効果1:未設定 / 効果2:未設定 / 効果3:未設定 / カテゴリ:未設定"
+            value="効果1:未設定 / 効果2:未設定 / 効果3:未設定 / カテゴリ:未設定 / モジュール名:未設定"
         )
         self.last_ocr_var = tk.StringVar(value="-")
 
@@ -89,14 +89,14 @@ class MainWindow(ttk.Frame):
         ttk.Label(self, text="ログファイル:").grid(row=6, column=0, sticky="w")
         ttk.Label(self, textvariable=self.log_path_var, wraplength=520).grid(row=6, column=1, sticky="w")
 
-        region_frame = ttk.LabelFrame(self, text="OCR取得範囲 (効果3枠 + カテゴリ1枠)")
+        region_frame = ttk.LabelFrame(self, text="OCR取得範囲 (効果3枠 + カテゴリ1枠 + モジュール名1枠)")
         region_frame.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
         headers = ["範囲", "left", "top", "width", "height", "選択", "適用"]
         for col, header in enumerate(headers):
             ttk.Label(region_frame, text=header).grid(row=0, column=col, sticky="w", padx=(0, 6))
 
-        region_labels = ["効果1", "効果2", "効果3", "カテゴリ"]
+        region_labels = ["効果1", "効果2", "効果3", "カテゴリ", "モジュール名"]
         for index, label in enumerate(region_labels):
             enabled_var = tk.BooleanVar(value=False)
             left_var = tk.StringVar(value="0")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from module_ocr_tool.app.normalizer import parse_category_text, parse_ocr_text
+from module_ocr_tool.app.normalizer import normalize_module_name_text, parse_category_text, parse_ocr_text
 
 
 def test_parse_normal_line() -> None:
@@ -78,3 +78,12 @@ def test_parse_category_text_empty_falls_back_to_general() -> None:
 def test_parse_category_text_unknown_falls_back_to_general() -> None:
     parsed = parse_category_text("不明カテゴリ")
     assert parsed.resolved_category == "general"
+
+
+def test_normalize_module_name_text() -> None:
+    normalized = normalize_module_name_text("EXC攻撃型モジュール・精選 |")
+    assert normalized == "exc攻撃型モジュール精選"
+
+
+def test_normalize_module_name_text_empty() -> None:
+    assert normalize_module_name_text("   ") == ""
