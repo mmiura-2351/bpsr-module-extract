@@ -10,7 +10,7 @@ import time
 import tkinter as tk
 
 from module_ocr_tool.app.config_store import load_app_config, save_app_config
-from module_ocr_tool.app.capture import CaptureRegion, ScreenCapture
+from module_ocr_tool.app.capture import CaptureRegion, CapturedFrame, ScreenCapture
 from module_ocr_tool.app.exporter import (
     append_modules_to_existing_json,
     build_export_payload,
@@ -503,11 +503,12 @@ class AppController:
 
     def _capture_and_extract_slot_lines(
         self,
+        base_frame: CapturedFrame,
         regions: list[tuple[int, CaptureRegion]],
     ) -> tuple[dict[int, object], dict[int, str]]:
         slot_images: dict[int, object] = {}
         for slot_index, region in regions:
-            slot_images[slot_index] = self.capture.capture(region_override=region)
+            slot_images[slot_index] = self.capture.crop_from_frame(base_frame, region=region)
 
         slot_lines: dict[int, str] = {}
         worker_count = min(len(slot_images), 3)
@@ -540,6 +541,7 @@ class AppController:
 
     def _search_best_anchor_shifted_lines(
         self,
+        base_frame: CapturedFrame,
         configured: list[tuple[int, CaptureRegion]],
         *,
         initial_images: dict[int, object],
@@ -567,7 +569,7 @@ class AppController:
                 (slot_index, self._shift_region_y(region, shift_y))
                 for slot_index, region in configured
             ]
-            slot_images, slot_lines = self._capture_and_extract_slot_lines(shifted_regions)
+            slot_images, slot_lines = self._capture_and_extract_slot_lines(base_frame, shifted_regions)
             quality = self._evaluate_slot_lines_quality(slot_order, slot_lines)
             if quality > best_quality:
                 best_quality = quality
@@ -636,6 +638,16 @@ class AppController:
                 debug_dir = self._create_debug_output_dir(token)
                 logger.info("Debug capture enabled (token=%s, dir=%s)", token, debug_dir)
             logger.info("Capture thread start (token=%s)", token)
+            base_frame = self.capture.capture_full()
+            logger.info(
+                "Captured base frame once (token=%s, shape=%s, origin=(%s,%s), size=(%s,%s))",
+                token,
+                getattr(base_frame.image, "shape", None),
+                base_frame.left,
+                base_frame.top,
+                base_frame.width,
+                base_frame.height,
+            )
 
             lines: list[str] = []
             category_line = ""
@@ -649,7 +661,7 @@ class AppController:
 
             module_name_region = self._effect_regions[4] if len(self._effect_regions) >= 5 else None
             if module_name_region is not None:
-                module_name_image = self.capture.capture(region_override=module_name_region)
+                module_name_image = self.capture.crop_from_frame(base_frame, region=module_name_region)
                 module_name_line = self.ocr_engine.extract_module_name_line(module_name_image)
                 module_cache_key = self._build_module_cache_key(module_name_line)
                 if debug_dir is not None:
@@ -705,7 +717,7 @@ class AppController:
                     )
                     self._position_cache.mark_failure(module_cache_key)
                 else:
-                    slot_images, slot_lines = self._capture_and_extract_slot_lines(cache_effect_regions)
+                    slot_images, slot_lines = self._capture_and_extract_slot_lines(base_frame, cache_effect_regions)
                     complete_count, _score = self._evaluate_slot_lines_quality(slot_order, slot_lines)
                     if complete_count >= expected_effect_count:
                         for index in slot_order:
@@ -735,10 +747,11 @@ class AppController:
                 )
                 configured_for_ocr = configured[:expected_effect_count]
                 slot_order = [index for index, _region in configured_for_ocr]
-                slot_images, slot_lines = self._capture_and_extract_slot_lines(configured_for_ocr)
+                slot_images, slot_lines = self._capture_and_extract_slot_lines(base_frame, configured_for_ocr)
                 complete_count, _score = self._evaluate_slot_lines_quality(slot_order, slot_lines)
                 if complete_count < len(slot_order):
                     slot_images, slot_lines, selected_shift_y = self._search_best_anchor_shifted_lines(
+                        base_frame,
                         configured_for_ocr,
                         initial_images=slot_images,
                         initial_lines=slot_lines,
@@ -776,7 +789,7 @@ class AppController:
                         )
                     logger.info("Region OCR done (slot=%s, line=%s)", index, line or "<empty>")
             elif not cache_effect_applied:
-                image = self.capture.capture()
+                image = base_frame.image
                 lines = self.ocr_engine.extract_effect_texts(image, max_effects=expected_effect_count)
                 if debug_dir is not None:
                     self._save_debug_slot_output(
@@ -793,7 +806,7 @@ class AppController:
             if category_region_for_ocr is None:
                 category_region_for_ocr = configured_category_region
             if category_region_for_ocr is not None:
-                category_image = self.capture.capture(region_override=category_region_for_ocr)
+                category_image = self.capture.crop_from_frame(base_frame, region=category_region_for_ocr)
                 category_line = self.ocr_engine.extract_category_line(category_image)
                 if debug_dir is not None:
                     self._save_debug_slot_output(
@@ -808,7 +821,7 @@ class AppController:
                     category_line or "<empty>",
                 )
                 if not category_line and category_source == "cache" and configured_category_region is not None:
-                    fallback_image = self.capture.capture(region_override=configured_category_region)
+                    fallback_image = self.capture.crop_from_frame(base_frame, region=configured_category_region)
                     fallback_line = self.ocr_engine.extract_category_line(fallback_image)
                     if fallback_line:
                         category_line = fallback_line
